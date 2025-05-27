@@ -495,9 +495,26 @@ def index():
             padding: 1rem;
             border-bottom: 1px solid var(--border-color);
             display: flex;
-            justify-content: center;
+            justify-content: space-between;
             align-items: center;
             position: relative;
+        }
+        
+        .clear-cache-button {
+            background-color: transparent;
+            color: #9ca3af;
+            border: none;
+            cursor: pointer;
+            padding: 0.5rem;
+            font-size: 0.875rem;
+            display: flex;
+            align-items: center;
+            transition: color 0.2s;
+            margin-right: 1rem;
+        }
+        
+        .clear-cache-button:hover {
+            color: #ef4444;
         }
         
         .header h1 {
@@ -668,19 +685,19 @@ def index():
         }
         
         .typing-indicator {
-            display: flex;
+            display: inline-flex;
             align-items: center;
             gap: 0.25rem;
-            color: #6b7280;
-            font-size: 0.875rem;
+            margin-left: 0.25rem;
         }
         
         .typing-dot {
-            width: 4px;
-            height: 4px;
-            background-color: #6b7280;
+            width: 5px;
+            height: 5px;
+            background-color: var(--primary-color);
             border-radius: 50%;
-            animation: typing-dot 1.4s infinite ease-in-out;
+            opacity: 0.7;
+            animation: typing-dot 1.2s infinite ease-in-out;
         }
         
         .typing-dot:nth-child(1) { animation-delay: 0s; }
@@ -688,8 +705,8 @@ def index():
         .typing-dot:nth-child(3) { animation-delay: 0.4s; }
         
         @keyframes typing-dot {
-            0%, 60%, 100% { transform: translateY(0); }
-            30% { transform: translateY(-4px); }
+            0%, 60%, 100% { opacity: 0.7; }
+            30% { opacity: 1; }
         }
         
         table {
@@ -761,6 +778,9 @@ def index():
 <body>
     <div class="header">
         <h1>NL2SQL Tool</h1>
+        <button id="clearCacheButton" class="clear-cache-button" title="Clear all uploaded and generated files">
+            <i class="fas fa-trash"></i>
+        </button>
     </div>
     
     <div class="chat-container">
@@ -810,6 +830,7 @@ def index():
         const sendButton = document.getElementById('sendButton');
         const fileInput = document.getElementById('file');
         const filePreview = document.getElementById('filePreview');
+        const clearCacheButton = document.getElementById('clearCacheButton');
         
         // Function to add a user message
         function addUserMessage(message) {
@@ -846,19 +867,20 @@ def index():
         
         // Function to add a typing indicator
         function addTypingIndicator() {
+            // Always create a new message with typing indicator at the end
             const indicator = document.createElement('div');
-            indicator.className = 'message typing-message';
+            indicator.className = 'message';
             indicator.id = 'typingIndicator';
             indicator.innerHTML = `
                 <div class="avatar bot-avatar">
                     <i class="fas fa-robot"></i>
                 </div>
                 <div class="content">
-                    <div class="typing-indicator">
+                    <span class="typing-indicator">
                         <div class="typing-dot"></div>
                         <div class="typing-dot"></div>
                         <div class="typing-dot"></div>
-                    </div>
+                    </span>
                 </div>
             `;
             messagesContainer.appendChild(indicator);
@@ -958,6 +980,57 @@ def index():
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
                 sendButton.click();
+            }
+        });
+        
+        // Handle clear cache button click
+        clearCacheButton.addEventListener('click', async () => {
+            try {
+                // Show confirmation dialog
+                if (!confirm('Are you sure you want to clear all uploaded and generated files?')) {
+                    return;
+                }
+                
+                // Show typing indicator
+                addTypingIndicator();
+                
+                // Call clear cache API
+                const response = await fetch('/api/clear_cache', {
+                    method: 'POST'
+                });
+                
+                if (!response.ok) {
+                    const errorText = await response.text();
+                    throw new Error(`Server error: ${response.status} ${errorText}`);
+                }
+                
+                const result = await response.json();
+                
+                // Remove typing indicator
+                removeTypingIndicator();
+                
+                if (result.success) {
+                    // Reset global variables
+                    dataDictPath = null;
+                    dbPath = null;
+                    
+                    // Clear file preview
+                    filePreview.style.display = 'none';
+                    filePreview.innerHTML = '';
+                    fileInput.value = '';
+                    
+                    // Disable send button
+                    sendButton.disabled = !queryInput.value.trim();
+                    
+                    // Add success message
+                    addBotMessage(`<p><i class="fas fa-check-circle" style="color: var(--primary-color);"></i> ${result.message}</p>`);
+                } else {
+                    throw new Error(result.error || 'Failed to clear cache');
+                }
+            } catch (error) {
+                console.error('Error clearing cache:', error);
+                removeTypingIndicator();
+                addBotMessage(`<p style="color: #ef4444;"><i class="fas fa-exclamation-circle"></i> <strong>Error:</strong> ${error.message}</p>`);
             }
         });
         
