@@ -29,13 +29,24 @@ app = Flask(__name__, static_folder='frontend/build')
 # Enable CORS with specific settings
 CORS(app, resources={r"/*": {"origins": "*"}}, supports_credentials=True)
 
-# Configure upload folder
-UPLOAD_FOLDER = 'uploads'
+# Configure folder structure
+# Main temp folder for all uploads and generated files
+TEMP_FOLDER = 'temp'
+if not os.path.exists(TEMP_FOLDER):
+    os.makedirs(TEMP_FOLDER)
+
+# Upload folder for storing uploaded files
+UPLOAD_FOLDER = os.path.join(TEMP_FOLDER, 'uploads')
 if not os.path.exists(UPLOAD_FOLDER):
     os.makedirs(UPLOAD_FOLDER)
 
-# Ensure the data dictionary folder exists
-DATA_DICT_FOLDER = 'data_dictionaries'
+# Gen folder for storing dictionaries and databases
+GEN_FOLDER = os.path.join(TEMP_FOLDER, 'gen')
+if not os.path.exists(GEN_FOLDER):
+    os.makedirs(GEN_FOLDER)
+
+# Data dictionary folder inside gen folder
+DATA_DICT_FOLDER = os.path.join(GEN_FOLDER, 'dictionaries')
 if not os.path.exists(DATA_DICT_FOLDER):
     os.makedirs(DATA_DICT_FOLDER)
 
@@ -168,8 +179,8 @@ def analyze_data():
         data_dict_path = os.path.join(DATA_DICT_FOLDER, f"{dataset_name}_data_dict.json")
         analyzer.save_data_dictionary(data_dict, data_dict_path, format="json")
         
-        # Create SQLite database
-        db_path = "csv_database.db"
+        # Create SQLite database in the gen folder
+        db_path = os.path.join(GEN_FOLDER, f"{dataset_name}.db")
         create_database_from_file(file_path, db_path)
         
         # Use custom JSON encoder to handle NaN values
