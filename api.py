@@ -787,6 +787,17 @@ def index():
                 to { transform: rotate(360deg); }
             }
             
+            .typing-animation::after {
+                content: '|';
+                animation: blink 1s infinite;
+                margin-left: 2px;
+            }
+            
+            @keyframes blink {
+                0%, 100% { opacity: 1; }
+                50% { opacity: 0; }
+            }
+            
             @media (max-width: 768px) {
                 .app-container {
                     padding: 1rem;
@@ -833,18 +844,19 @@ def index():
                     <div id="uploadStatus" style="display: none; margin-top: 1rem;"></div>
                     <div id="fileInfo" style="display: none;"></div>
                     <div id="analysisSection" style="display: none; margin-top: 1rem;">
-                        <h3>File Analysis</h3>
-                        <div class="stats-grid">
-                            <div class="stat-item">
-                                <div class="stat-label">File Type</div>
-                                <div class="stat-value" id="fileType">Unknown</div>
-                            </div>
-                            <div class="stat-item">
-                                <div class="stat-label">Description</div>
-                                <div class="stat-value" id="fileDescription">Unknown</div>
+                        <h3>AI Analysis</h3>
+                        <div class="chat-container" style="background-color: #f9fafb; border-radius: 8px; padding: 1rem; margin-top: 0.5rem; font-size: 0.9rem; line-height: 1.5;">
+                            <div class="chat-message" style="display: flex; margin-bottom: 0.5rem;">
+                                <div style="background-color: var(--primary); color: white; border-radius: 50%; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; margin-right: 0.5rem; flex-shrink: 0;">
+                                    <i class="fas fa-robot" style="font-size: 0.75rem;"></i>
+                                </div>
+                                <div id="aiAnalysisContent" style="flex-grow: 1;">
+                                    <div id="fileTypeMessage" class="typing-animation"></div>
+                                    <div id="fileDescriptionMessage" style="margin-top: 0.5rem;"></div>
+                                    <div id="fileRecommendationMessage" style="margin-top: 0.5rem;"></div>
+                                </div>
                             </div>
                         </div>
-                        <p><strong>Recommendation:</strong> <span id="fileRecommendation">Unknown</span></p>
                     </div>
                 </div>
                 
@@ -1068,21 +1080,131 @@ def index():
                         });
                     }
                     
-                    // Display LLM analysis if available
+                    // Display LLM analysis if available with streaming effect
                     if (uploadData.analysis) {
                         const analysisSection = document.getElementById('analysisSection');
                         analysisSection.style.display = 'block';
                         
-                        // Update analysis info
-                        document.getElementById('fileType').textContent = uploadData.analysis.file_type || 'Unknown';
-                        document.getElementById('fileDescription').textContent = uploadData.analysis.description || 'No description available';
-                        document.getElementById('fileRecommendation').textContent = uploadData.analysis.recommendation || 'No recommendation available';
+                        // Get analysis content
+                        const fileType = uploadData.analysis.file_type || 'Unknown';
+                        const fileDescription = uploadData.analysis.description || 'No description available';
+                        const fileRecommendation = uploadData.analysis.recommendation || 'No recommendation available';
                         
-                        fileInfo.innerHTML += `<p>AI Analysis: <strong>${uploadData.analysis.file_type}</strong> file detected</p>`;
+                        // Get message containers
+                        const fileTypeMessage = document.getElementById('fileTypeMessage');
+                        const fileDescriptionMessage = document.getElementById('fileDescriptionMessage');
+                        const fileRecommendationMessage = document.getElementById('fileRecommendationMessage');
+                        
+                        // Clear previous content
+                        fileTypeMessage.textContent = '';
+                        fileTypeMessage.classList.add('typing-animation');
+                        fileDescriptionMessage.textContent = '';
+                        fileRecommendationMessage.textContent = '';
+                        
+                        // We'll handle this in the chat interface instead
+                        
+                        // Simulate typing for file type
+                        const typeText = `I've analyzed your file and detected it's a ${fileType} file.`;
+                        let typeIndex = 0;
+                        
+                        function typeFileType() {
+                            if (typeIndex < typeText.length) {
+                                fileTypeMessage.textContent += typeText.charAt(typeIndex);
+                                typeIndex++;
+                                setTimeout(typeFileType, 20 + Math.random() * 30);
+                            } else {
+                                fileTypeMessage.classList.remove('typing-animation');
+                                setTimeout(typeFileDescription, 500);
+                            }
+                        }
+                        
+                        // Simulate typing for description
+                        function typeFileDescription() {
+                            fileDescriptionMessage.classList.add('typing-animation');
+                            let descIndex = 0;
+                            
+                            function typeDesc() {
+                                if (descIndex < fileDescription.length) {
+                                    fileDescriptionMessage.textContent += fileDescription.charAt(descIndex);
+                                    descIndex++;
+                                    setTimeout(typeDesc, 5 + Math.random() * 15);
+                                } else {
+                                    fileDescriptionMessage.classList.remove('typing-animation');
+                                    setTimeout(typeFileRecommendation, 500);
+                                }
+                            }
+                            
+                            typeDesc();
+                        }
+                        
+                        // Simulate typing for recommendation
+                        function typeFileRecommendation() {
+                            fileRecommendationMessage.classList.add('typing-animation');
+                            const recText = `Recommendation: ${fileRecommendation}`;
+                            let recIndex = 0;
+                            
+                            function typeRec() {
+                                if (recIndex < recText.length) {
+                                    fileRecommendationMessage.textContent += recText.charAt(recIndex);
+                                    recIndex++;
+                                    setTimeout(typeRec, 10 + Math.random() * 20);
+                                } else {
+                                    fileRecommendationMessage.classList.remove('typing-animation');
+                                    
+                                    // Wait for all processing steps to complete before showing final message
+                                    setTimeout(() => {
+                                        // Add final processing step
+                                        const processingStepsMessage = document.getElementById('processingStepsMessage');
+                                        processingStepsMessage.innerHTML += '<br><i class="fas fa-check"></i> Analysis complete';
+                                        
+                                        // Show completion message after all steps are done
+                                        setTimeout(() => {
+                                            const completionMessage = document.getElementById('completionMessage');
+                                            completionMessage.style.display = 'block';
+                                            completionMessage.innerHTML = `
+                                                <div class="success-message" style="display: flex; align-items: center; gap: 0.5rem; color: var(--secondary);">
+                                                    <i class="fas fa-check-circle"></i>
+                                                    <span><strong>Analysis complete!</strong> Your data is ready for querying.</span>
+                                                </div>
+                                            `;
+                                            
+                                            // Make processing steps less prominent
+                                            processingStepsMessage.style.opacity = '0.7';
+                                        }, 800);
+                                    }, 2000);
+                                }
+                            }
+                            
+                            typeRec();
+                        }
+                        
+                        // Start the typing animation
+                        setTimeout(typeFileType, 500);
                     }
                     
-                    // Update status
-                    fileInfo.innerHTML += `<p>Analyzing data... <i class="fas fa-spinner fa-spin"></i></p>`;
+                    // Show the AI Analysis section early with a loading message
+                    const analysisSection = document.getElementById('analysisSection');
+                    analysisSection.style.display = 'block';
+                    
+                    const fileTypeMessage = document.getElementById('fileTypeMessage');
+                    fileTypeMessage.innerHTML = 'Analyzing your data... <i class="fas fa-spinner fa-spin"></i>';
+                    
+                    // Add additional message containers for processing steps
+                    const aiAnalysisContent = document.getElementById('aiAnalysisContent');
+                    const processingStepsMessage = document.createElement('div');
+                    processingStepsMessage.id = 'processingStepsMessage';
+                    processingStepsMessage.style.marginTop = '0.5rem';
+                    processingStepsMessage.style.color = '#6B7280';
+                    processingStepsMessage.style.fontSize = '0.8rem';
+                    processingStepsMessage.innerHTML = '<i class="fas fa-cog fa-spin"></i> Processing file...';
+                    aiAnalysisContent.appendChild(processingStepsMessage);
+                    
+                    // Add container for completion message
+                    const completionMessage = document.createElement('div');
+                    completionMessage.id = 'completionMessage';
+                    completionMessage.style.marginTop = '1rem';
+                    completionMessage.style.display = 'none';
+                    aiAnalysisContent.appendChild(completionMessage);
                     
                     // Analyze data
                     console.log('Analyzing data...');
@@ -1110,12 +1232,29 @@ def index():
                         const responseText = await analyzeResponse.text();
                         console.log('Analyze response text:', responseText);
                         
+                        // Update processing steps
+                        const processingStepsMessage = document.getElementById('processingStepsMessage');
+                        processingStepsMessage.innerHTML += '<br><i class="fas fa-check"></i> File uploaded successfully';
+                        
                         // Handle NaN values by replacing them with null
                         const cleanedText = responseText.replace(/: ?NaN/g, ': null');
                         
                         // Parse the cleaned JSON
                         analyzeData = JSON.parse(cleanedText);
                         console.log('Analyze data:', analyzeData);
+                        
+                        // Update processing steps - but don't show all steps immediately
+                        setTimeout(() => {
+                            processingStepsMessage.innerHTML += '<br><i class="fas fa-check"></i> Data parsed successfully';
+                        }, 500);
+                        
+                        setTimeout(() => {
+                            processingStepsMessage.innerHTML += '<br><i class="fas fa-check"></i> Database created';
+                        }, 1000);
+                        
+                        setTimeout(() => {
+                            processingStepsMessage.innerHTML += '<br><i class="fas fa-check"></i> Schema analyzed';
+                        }, 1500);
                     } catch (parseError) {
                         console.error('Error parsing analyze response:', parseError);
                         throw new Error(`Failed to parse server response: ${parseError.message}`);
@@ -1144,10 +1283,6 @@ def index():
                         <h4>Data Preview</h4>
                         <div class="data-preview-container" style="max-height: 200px; overflow-y: auto; overflow-x: auto; border: 1px solid #E5E7EB; border-radius: 8px;">
                             <table id="previewTable" class="data-table" style="font-size: 0.8rem;"></table>
-                        </div>
-                        <div class="success-message">
-                            <i class="fas fa-check-circle"></i>
-                            <span><strong>Analysis complete!</strong> You can now query your data.</span>
                         </div>
                     `;
                     
