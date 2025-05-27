@@ -57,32 +57,57 @@ processor = None
 def clear_cache():
     """Clear all cached files in the temp folder"""
     try:
+        # Reset the global processor first to release any database connections
+        global processor
+        processor = None
+        
+        files_cleared = 0
+        files_skipped = 0
+        
         # Clear uploads folder
         for file in os.listdir(UPLOAD_FOLDER):
             file_path = os.path.join(UPLOAD_FOLDER, file)
             if os.path.isfile(file_path):
-                os.remove(file_path)
+                try:
+                    os.remove(file_path)
+                    files_cleared += 1
+                except PermissionError:
+                    # Skip files that are in use
+                    print(f"Skipping file in use: {file_path}")
+                    files_skipped += 1
                 
         # Clear dictionaries folder
         for file in os.listdir(DATA_DICT_FOLDER):
             file_path = os.path.join(DATA_DICT_FOLDER, file)
             if os.path.isfile(file_path):
-                os.remove(file_path)
+                try:
+                    os.remove(file_path)
+                    files_cleared += 1
+                except PermissionError:
+                    # Skip files that are in use
+                    print(f"Skipping file in use: {file_path}")
+                    files_skipped += 1
                 
         # Clear database files in gen folder
         for file in os.listdir(GEN_FOLDER):
             if file.endswith('.db'):
                 file_path = os.path.join(GEN_FOLDER, file)
                 if os.path.isfile(file_path):
-                    os.remove(file_path)
+                    try:
+                        os.remove(file_path)
+                        files_cleared += 1
+                    except PermissionError:
+                        # Skip files that are in use
+                        print(f"Skipping file in use: {file_path}")
+                        files_skipped += 1
         
-        # Reset the global processor
-        global processor
-        processor = None
+        message = f"Cache cleared successfully. {files_cleared} files removed"
+        if files_skipped > 0:
+            message += f", {files_skipped} files skipped (in use)"
         
         return jsonify({
             'success': True,
-            'message': 'Cache cleared successfully'
+            'message': message
         })
     except Exception as e:
         print(f"Error clearing cache: {str(e)}")
