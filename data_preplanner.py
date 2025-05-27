@@ -58,6 +58,32 @@ class DataPreplanner:
                 data.append(row)
             
             df = pd.DataFrame(data)
+        elif file_ext in ['.yaml', '.yml']:
+            import yaml
+            # Parse YAML to DataFrame
+            with open(file_path, 'r') as yaml_file:
+                yaml_data = yaml.safe_load(yaml_file)
+            
+            # Handle different YAML structures
+            if isinstance(yaml_data, list):
+                # List of dictionaries
+                df = pd.DataFrame(yaml_data)
+            elif isinstance(yaml_data, dict):
+                # Single dictionary or nested structure
+                # Try to flatten if it's a nested structure
+                if all(isinstance(v, dict) for v in yaml_data.values()):
+                    # It's a nested dictionary, each key is an entry
+                    records = []
+                    for key, value in yaml_data.items():
+                        record = {'id': key}
+                        record.update(value)
+                        records.append(record)
+                    df = pd.DataFrame(records)
+                else:
+                    # It's a single dictionary, convert to a single row DataFrame
+                    df = pd.DataFrame([yaml_data])
+            else:
+                raise ValueError("Unsupported YAML structure")
         else:
             raise ValueError(f"Unsupported file format: {file_ext}")
         

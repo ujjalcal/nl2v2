@@ -89,6 +89,32 @@ def upload_file():
                 data.append(row)
             
             df = pd.DataFrame(data)
+        elif file_ext in ['.yaml', '.yml']:
+            import yaml
+            # Parse YAML to DataFrame
+            with open(file_path, 'r') as yaml_file:
+                yaml_data = yaml.safe_load(yaml_file)
+            
+            # Handle different YAML structures
+            if isinstance(yaml_data, list):
+                # List of dictionaries
+                df = pd.DataFrame(yaml_data)
+            elif isinstance(yaml_data, dict):
+                # Single dictionary or nested structure
+                # Try to flatten if it's a nested structure
+                if all(isinstance(v, dict) for v in yaml_data.values()):
+                    # It's a nested dictionary, each key is an entry
+                    records = []
+                    for key, value in yaml_data.items():
+                        record = {'id': key}
+                        record.update(value)
+                        records.append(record)
+                    df = pd.DataFrame(records)
+                else:
+                    # It's a single dictionary, convert to a single row DataFrame
+                    df = pd.DataFrame([yaml_data])
+            else:
+                raise ValueError("Unsupported YAML structure")
         else:
             response = json.dumps({'error': f'Unsupported file format: {file_ext}'}, cls=NpEncoder)
             return response, 400, {'Content-Type': 'application/json'}
@@ -234,6 +260,32 @@ def create_database_from_file(file_path, db_path):
             data.append(row)
         
         df = pd.DataFrame(data)
+    elif file_ext in ['.yaml', '.yml']:
+        import yaml
+        # Parse YAML to DataFrame
+        with open(file_path, 'r') as yaml_file:
+            yaml_data = yaml.safe_load(yaml_file)
+        
+        # Handle different YAML structures
+        if isinstance(yaml_data, list):
+            # List of dictionaries
+            df = pd.DataFrame(yaml_data)
+        elif isinstance(yaml_data, dict):
+            # Single dictionary or nested structure
+            # Try to flatten if it's a nested structure
+            if all(isinstance(v, dict) for v in yaml_data.values()):
+                # It's a nested dictionary, each key is an entry
+                records = []
+                for key, value in yaml_data.items():
+                    record = {'id': key}
+                    record.update(value)
+                    records.append(record)
+                df = pd.DataFrame(records)
+            else:
+                # It's a single dictionary, convert to a single row DataFrame
+                df = pd.DataFrame([yaml_data])
+        else:
+            raise ValueError("Unsupported YAML structure")
     else:
         raise ValueError(f"Unsupported file format: {file_ext}")
     
@@ -614,12 +666,12 @@ def index():
                 <div class="card">
                     <h2><span class="icon"><i class="fas fa-upload"></i></span> Upload Data</h2>
                     <div class="form-group">
-                        <label for="file">Select a CSV file to analyze</label>
+                        <label for="file">Select a data file to analyze (CSV, JSON, XML, YAML, Excel)</label>
                         <div class="file-input-wrapper">
-                            <input type="file" id="file" accept=".csv">
+                            <input type="file" id="file" accept=".csv,.json,.xml,.yaml,.yml,.xlsx,.xls">
                             <div class="file-input-content">
-                                <div class="file-input-icon"><i class="fas fa-file-csv"></i></div>
-                                <span>Drop your CSV file here or click to browse</span>
+                                <div class="file-input-icon"><i class="fas fa-file-alt"></i></div>
+                                <span>Drop your data file here or click to browse</span>
                             </div>
                         </div>
                     </div>
@@ -649,11 +701,28 @@ def index():
             
             // Update file input display when file is selected
             document.getElementById('file').addEventListener('change', (e) => {
-                const fileName = e.target.files[0]?.name;
-                if (fileName) {
+                const file = e.target.files[0];
+                if (file) {
+                    const fileName = file.name;
+                    const fileExt = fileName.split('.').pop().toLowerCase();
+                    
+                    // Determine the appropriate icon based on file extension
+                    let fileIcon = 'fa-file-alt';
+                    if (fileExt === 'csv') {
+                        fileIcon = 'fa-file-csv';
+                    } else if (fileExt === 'json') {
+                        fileIcon = 'fa-file-code';
+                    } else if (['xlsx', 'xls'].includes(fileExt)) {
+                        fileIcon = 'fa-file-excel';
+                    } else if (fileExt === 'xml') {
+                        fileIcon = 'fa-file-code';
+                    } else if (['yaml', 'yml'].includes(fileExt)) {
+                        fileIcon = 'fa-file-code';
+                    }
+                    
                     const fileContent = document.querySelector('.file-input-content');
                     fileContent.innerHTML = `
-                        <div class="file-input-icon" style="color: var(--secondary);"><i class="fas fa-check-circle"></i></div>
+                        <div class="file-input-icon" style="color: var(--secondary);"><i class="fas ${fileIcon}"></i></div>
                         <span>${fileName}</span>
                     `;
                 }
