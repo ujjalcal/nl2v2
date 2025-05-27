@@ -14,10 +14,13 @@ A minimalist, agentic AI application that converts natural language queries to S
 
 ## Architecture
 
-The application uses a single-file Flask application:
+The application uses a clean separation between frontend and backend:
 
-- **Frontend**: Minimalist HTML/CSS/JS chat interface with file upload capabilities
-- **Backend**: Flask API providing endpoints for message processing, file uploads, and data access
+- **Frontend (minimalist_ui.py)**: Minimalist HTML/CSS/JS chat interface with file upload capabilities
+- **Backend (nl2sql_api.py)**: Flask API providing endpoints for message processing, file uploads, and data access
+- **Launcher (nl2sql_app.py)**: Starts both the UI and API servers and opens the browser
+
+This separation allows the UI to remain stable while the backend can be enhanced independently. The UI communicates with the API via HTTP requests, making it easy to modify either component without affecting the other.
 
 ## Setup Instructions
 
@@ -47,8 +50,10 @@ The application uses a single-file Flask application:
 
 4. Start the application:
    ```
-   python minimalist_api.py
+   python nl2sql_app.py
    ```
+   
+   This will launch both the UI and API servers and open the application in your browser.
 
 ## Usage
 
