@@ -848,7 +848,7 @@ def index():
                     </div>
                 </div>
                 
-                <div class="card" id="querySection" style="display: none;">
+                <div class="card" id="querySection">
                     <h2><span class="icon"><i class="fas fa-search"></i></span> Query Data</h2>
                     <div class="form-group">
                         <label for="query">Ask a question about your data in natural language</label>
@@ -1038,8 +1038,8 @@ def index():
                             </div>
                         </div>
                         <h4>Data Preview</h4>
-                        <div style="overflow-x: auto;">
-                            <table id="previewTable" class="data-table"></table>
+                        <div class="data-preview-container" style="max-height: 200px; overflow-y: auto; overflow-x: auto; border: 1px solid #E5E7EB; border-radius: 8px;">
+                            <table id="previewTable" class="data-table" style="font-size: 0.8rem;"></table>
                         </div>
                     `;
                     
@@ -1141,8 +1141,10 @@ def index():
                                 <div class="stat-label">Columns</div>
                             </div>
                         </div>
-                        <h4>Data Types</h4>
-                        <p>${uploadData.stats.data_types}</p>
+                        <h4>Data Preview</h4>
+                        <div class="data-preview-container" style="max-height: 200px; overflow-y: auto; overflow-x: auto; border: 1px solid #E5E7EB; border-radius: 8px;">
+                            <table id="previewTable" class="data-table" style="font-size: 0.8rem;"></table>
+                        </div>
                         <div class="success-message">
                             <i class="fas fa-check-circle"></i>
                             <span><strong>Analysis complete!</strong> You can now query your data.</span>
