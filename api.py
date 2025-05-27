@@ -844,16 +844,17 @@ def index():
                     <div id="uploadStatus" style="display: none; margin-top: 1rem;"></div>
                     <div id="fileInfo" style="display: none;"></div>
                     <div id="analysisSection" style="display: none; margin-top: 1rem;">
-                        <h3>AI Analysis</h3>
-                        <div class="chat-container" style="background-color: #f9fafb; border-radius: 8px; padding: 1rem; margin-top: 0.5rem; font-size: 0.9rem; line-height: 1.5;">
+                        <h3><i class="fas fa-brain" style="color: var(--primary); margin-right: 0.5rem;"></i>AI Analysis</h3>
+                        <div class="chat-container" style="background-color: #f9fafb; border-radius: 12px; padding: 1.25rem; margin-top: 0.5rem; font-size: 0.9rem; line-height: 1.5; box-shadow: 0 2px 8px rgba(0,0,0,0.05);">
                             <div class="chat-message" style="display: flex; margin-bottom: 0.5rem;">
-                                <div style="background-color: var(--primary); color: white; border-radius: 50%; width: 24px; height: 24px; display: flex; align-items: center; justify-content: center; margin-right: 0.5rem; flex-shrink: 0;">
-                                    <i class="fas fa-robot" style="font-size: 0.75rem;"></i>
+                                <div style="background-color: var(--primary); color: white; border-radius: 50%; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; margin-right: 0.75rem; flex-shrink: 0; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                                    <i class="fas fa-robot" style="font-size: 0.85rem;"></i>
                                 </div>
                                 <div id="aiAnalysisContent" style="flex-grow: 1;">
-                                    <div id="fileTypeMessage" class="typing-animation"></div>
-                                    <div id="fileDescriptionMessage" style="margin-top: 0.5rem;"></div>
-                                    <div id="fileRecommendationMessage" style="margin-top: 0.5rem;"></div>
+                                    <div class="ai-name" style="font-weight: 600; color: var(--primary); margin-bottom: 0.5rem; font-size: 0.85rem;">GPT-4.1 Nano</div>
+                                    <div id="fileTypeMessage" class="" style="background-color: rgba(255,255,255,0.7); padding: 0.75rem; border-radius: 8px; border-left: 3px solid var(--primary);"></div>
+                                    <div id="fileDescriptionMessage" style="margin-top: 0.75rem; background-color: rgba(255,255,255,0.7); padding: 0.75rem; border-radius: 8px; border-left: 3px solid var(--secondary);"></div>
+                                    <div id="fileRecommendationMessage" style="margin-top: 0.75rem; background-color: rgba(255,255,255,0.7); padding: 0.75rem; border-radius: 8px; border-left: 3px solid #10B981;"></div>
                                 </div>
                             </div>
                         </div>
@@ -1151,27 +1152,25 @@ def index():
                                 } else {
                                     fileRecommendationMessage.classList.remove('typing-animation');
                                     
-                                    // Wait for all processing steps to complete before showing final message
+                                    // Add a transition message to explain what's happening next
                                     setTimeout(() => {
-                                        // Add final processing step
-                                        const processingStepsMessage = document.getElementById('processingStepsMessage');
-                                        processingStepsMessage.innerHTML += '<br><i class="fas fa-check"></i> Analysis complete';
+                                        // Create a transition message element
+                                        const transitionMessage = document.createElement('div');
+                                        transitionMessage.id = 'transitionMessage';
+                                        transitionMessage.style.marginTop = '0.75rem';
+                                        transitionMessage.style.backgroundColor = 'rgba(255,255,255,0.7)';
+                                        transitionMessage.style.padding = '0.75rem';
+                                        transitionMessage.style.borderRadius = '8px';
+                                        transitionMessage.style.borderLeft = '3px solid #6366F1';
+                                        transitionMessage.style.color = '#4B5563';
+                                        transitionMessage.style.fontSize = '0.85rem';
+                                        transitionMessage.innerHTML = '<i class="fas fa-database"></i> Now setting up your database for querying...';
                                         
-                                        // Show completion message after all steps are done
-                                        setTimeout(() => {
-                                            const completionMessage = document.getElementById('completionMessage');
-                                            completionMessage.style.display = 'block';
-                                            completionMessage.innerHTML = `
-                                                <div class="success-message" style="display: flex; align-items: center; gap: 0.5rem; color: var(--secondary);">
-                                                    <i class="fas fa-check-circle"></i>
-                                                    <span><strong>Analysis complete!</strong> Your data is ready for querying.</span>
-                                                </div>
-                                            `;
-                                            
-                                            // Make processing steps less prominent
-                                            processingStepsMessage.style.opacity = '0.7';
-                                        }, 800);
-                                    }, 2000);
+                                        // Add it before the processing steps
+                                        const aiAnalysisContent = document.getElementById('aiAnalysisContent');
+                                        const processingStepsMessage = document.getElementById('processingStepsMessage');
+                                        aiAnalysisContent.insertBefore(transitionMessage, processingStepsMessage);
+                                    }, 500);
                                 }
                             }
                             
@@ -1193,10 +1192,14 @@ def index():
                     const aiAnalysisContent = document.getElementById('aiAnalysisContent');
                     const processingStepsMessage = document.createElement('div');
                     processingStepsMessage.id = 'processingStepsMessage';
-                    processingStepsMessage.style.marginTop = '0.5rem';
-                    processingStepsMessage.style.color = '#6B7280';
+                    processingStepsMessage.style.marginTop = '1rem';
+                    processingStepsMessage.style.padding = '0.75rem';
+                    processingStepsMessage.style.backgroundColor = 'rgba(243, 244, 246, 0.7)';
+                    processingStepsMessage.style.borderRadius = '8px';
+                    processingStepsMessage.style.color = '#4B5563';
                     processingStepsMessage.style.fontSize = '0.8rem';
-                    processingStepsMessage.innerHTML = '<i class="fas fa-cog fa-spin"></i> Processing file...';
+                    processingStepsMessage.style.borderLeft = '3px solid #6366F1';
+                    processingStepsMessage.innerHTML = '<div style="font-weight: 600; margin-bottom: 0.5rem; color: #4F46E5;"><i class="fas fa-cog fa-spin"></i> Processing Pipeline</div><div>• <i class="fas fa-cog fa-spin"></i> Processing file...</div>';
                     aiAnalysisContent.appendChild(processingStepsMessage);
                     
                     // Add container for completion message
@@ -1245,16 +1248,71 @@ def index():
                         
                         // Update processing steps - but don't show all steps immediately
                         setTimeout(() => {
-                            processingStepsMessage.innerHTML += '<br><i class="fas fa-check"></i> Data parsed successfully';
+                            // First, make sure we're starting with the correct base content
+                            processingStepsMessage.innerHTML = '<div style="font-weight: 600; margin-bottom: 0.5rem; color: #4F46E5;"><i class="fas fa-cog fa-spin"></i> Processing Pipeline</div><div>• <i class="fas fa-check-circle" style="color: #10B981;"></i> File uploaded successfully</div><div>• <i class="fas fa-cog fa-spin"></i> Parsing data...</div>';
                         }, 500);
                         
                         setTimeout(() => {
-                            processingStepsMessage.innerHTML += '<br><i class="fas fa-check"></i> Database created';
+                            // Update the parsing data step
+                            processingStepsMessage.innerHTML = processingStepsMessage.innerHTML.replace('<i class="fas fa-cog fa-spin"></i> Parsing data...', '<i class="fas fa-check-circle" style="color: #10B981;"></i> Data parsed successfully');
+                            processingStepsMessage.innerHTML += '<div>• <i class="fas fa-cog fa-spin"></i> Creating database...</div>';
                         }, 1000);
                         
                         setTimeout(() => {
-                            processingStepsMessage.innerHTML += '<br><i class="fas fa-check"></i> Schema analyzed';
+                            // Update the creating database step
+                            processingStepsMessage.innerHTML = processingStepsMessage.innerHTML.replace('<i class="fas fa-cog fa-spin"></i> Creating database...', '<i class="fas fa-check-circle" style="color: #10B981;"></i> Database created');
+                            processingStepsMessage.innerHTML += '<div>• <i class="fas fa-cog fa-spin"></i> Analyzing schema...</div>';
                         }, 1500);
+                        
+                        setTimeout(() => {
+                            // Update the analyzing schema step
+                            processingStepsMessage.innerHTML = processingStepsMessage.innerHTML.replace('<i class="fas fa-cog fa-spin"></i> Analyzing schema...', '<i class="fas fa-check-circle" style="color: #10B981;"></i> Schema analyzed');
+                            
+                            // Add final processing step
+                            setTimeout(() => {
+                                // Add finalizing database step
+                                processingStepsMessage.innerHTML += '<div>• <i class="fas fa-cog fa-spin"></i> Finalizing database...</div>';
+                                
+                                // Hide transition message when we're almost done
+                                const transitionMessage = document.getElementById('transitionMessage');
+                                if (transitionMessage) {
+                                    transitionMessage.style.opacity = '0.7';
+                                }
+                                
+                                setTimeout(() => {
+                                    // Update the finalizing database step
+                                    processingStepsMessage.innerHTML = processingStepsMessage.innerHTML.replace('<i class="fas fa-cog fa-spin"></i> Finalizing database...', '<i class="fas fa-check-circle" style="color: #10B981;"></i> Database ready');
+                                    
+                                    // Now show the completion message after all steps are truly done
+                                    setTimeout(() => {
+                                        // Remove the transition message
+                                        if (transitionMessage) {
+                                            transitionMessage.remove();
+                                        }
+                                        
+                                        // Show completion message
+                                        const completionMessage = document.getElementById('completionMessage');
+                                        completionMessage.style.display = 'block';
+                                        completionMessage.innerHTML = `
+                                            <div style="background-color: rgba(16, 185, 129, 0.1); border-left: 3px solid #10B981; padding: 1rem; border-radius: 8px; margin-top: 1rem;">
+                                                <div style="display: flex; align-items: center; gap: 0.75rem;">
+                                                    <div style="background-color: #10B981; color: white; border-radius: 50%; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; flex-shrink: 0;">
+                                                        <i class="fas fa-check"></i>
+                                                    </div>
+                                                    <div>
+                                                        <div style="font-weight: 600; color: #10B981; font-size: 0.95rem;">Analysis Complete</div>
+                                                        <div style="color: #4B5563; margin-top: 0.25rem;">Your data is ready for querying. You can now ask questions about your dataset.</div>
+                                                    </div>
+                                                </div>
+                                            </div>
+                                        `;
+                                        
+                                        // Make processing steps less prominent
+                                        processingStepsMessage.style.opacity = '0.8';
+                                    }, 800);
+                                }, 800);
+                            }, 800);
+                        }, 2000);
                     } catch (parseError) {
                         console.error('Error parsing analyze response:', parseError);
                         throw new Error(`Failed to parse server response: ${parseError.message}`);
