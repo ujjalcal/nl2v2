@@ -1,0 +1,65 @@
+dataset_name: temp_FMX (1) - FMX (1)
+fields_count: 4
+description: This dataset details the schema of the FMX database, listing tables and
+  their columns, including column names, data types, and their positions within each
+  table.
+TABLE_NAME:
+  type: string
+  categorical: true
+  description: Name of the database table
+  constraints: None
+  synonyms:
+  - table
+  - table_identifier
+  sample:
+  - MSR_PURCHASEDATA_FMX
+  - BUYER_POP_MGMT_RPT_FMX
+  - EXCHANGESELLERBILLING_FMX
+  - MSR_PURCHASEDATA_FMX
+  - MSR_PURCHASEDATA_STG
+  relationships: []
+COLUMN_NAME:
+  type: string
+  categorical: true
+  description: Name of the column within a table
+  constraints: None
+  synonyms:
+  - field
+  - column
+  sample:
+  - SELLERLOANNUMBER
+  - CHANNEL
+  - DELQSTATUS
+  - LOADDATE
+  - DTI
+  relationships: []
+DATA_TYPE:
+  type: string
+  categorical: true
+  description: Data type of the field's values
+  constraints: Values include NUMBER, TEXT, DATE, etc.
+  synonyms:
+  - type
+  - data_type
+  sample:
+  - NUMBER
+  - TEXT
+  - DATE
+  - TEXT
+  - TEXT
+  relationships: []
+ORDINAL_POSITION:
+  type: integer
+  categorical: false
+  description: Position of the column within the table
+  constraints: Positive integer starting at 1
+  synonyms:
+  - column_order
+  - position
+  sample:
+  - 8
+  - 10
+  - 37
+  - 23
+  - 28
+  relationships: []

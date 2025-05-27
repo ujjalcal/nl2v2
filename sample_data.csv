@@ -1,0 +1,11 @@
+id,customer_name,product_id,product_name,category,price,quantity,order_date,status
+1,John Smith,P001,Laptop,Electronics,1200.50,1,2023-01-15,Delivered
+2,Jane Doe,P002,Smartphone,Electronics,800.75,2,2023-01-16,Processing
+3,Robert Johnson,P003,Headphones,Electronics,150.25,3,2023-01-17,Delivered
+4,Emily Wilson,P004,T-shirt,Clothing,25.99,4,2023-01-18,Shipped
+5,Michael Brown,P005,Jeans,Clothing,45.50,2,2023-01-19,Processing
+6,Sarah Davis,P006,Sneakers,Footwear,85.00,1,2023-01-20,Delivered
+7,David Miller,P007,Watch,Accessories,120.75,1,2023-01-21,Shipped
+8,Jennifer Garcia,P008,Backpack,Accessories,65.25,2,2023-01-22,Processing
+9,James Rodriguez,P009,Water Bottle,Home,15.50,3,2023-01-23,Delivered
+10,Lisa Martinez,P010,Coffee Maker,Home,95.00,1,2023-01-24,Shipped
