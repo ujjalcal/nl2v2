@@ -23,6 +23,122 @@ class DataPreplanner:
         """Initialize the DataPreplanner with OpenAI client."""
         self.client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
     
+    def analyze_schema(self, file_path: str, progress_callback=None) -> Dict[str, Any]:
+        """
+        Analyze a schema file and generate a data dictionary directly from the schema.
+        
+        Args:
+            file_path: Path to the schema file
+            progress_callback: Optional callback function to report progress
+            
+        Returns:
+            Dictionary containing the data dictionary derived from the schema
+        """
+        # Determine file type from extension
+        file_ext = os.path.splitext(file_path)[1].lower()
+        
+        # Read schema file based on extension
+        if file_ext == '.csv':
+            df = pd.read_csv(file_path, encoding='utf-8', on_bad_lines='skip')
+        elif file_ext == '.json':
+            df = pd.read_json(file_path)
+        elif file_ext in ['.xlsx', '.xls']:
+            df = pd.read_excel(file_path)
+        else:
+            raise ValueError(f"Unsupported schema file format: {file_ext}")
+        
+        # Extract basic metadata
+        dataset_name = os.path.basename(file_path).split('.')[0]
+        
+        # Initialize data dictionary
+        data_dict = {
+            "dataset_name": dataset_name,
+            "fields_count": 0,  # Will be updated later
+            "description": f"Schema for {dataset_name} database"
+        }
+        
+        # Use GPT to analyze the schema structure
+        prompt = f"""
+        I have a schema file with the following structure. Please analyze it and help me understand the tables and columns:
+        
+        {df.head(20).to_string()}
+        
+        Please provide a detailed analysis of this schema, including:
+        1. What tables are defined in this schema?
+        2. What are the columns for each table?
+        3. What are the data types for each column?
+        4. Are there any primary keys or relationships between tables?
+        
+        Format your response as a JSON object with the structure that can be directly used as a data dictionary.
+        """
+        
+        try:
+            response = self.client.chat.completions.create(
+                model="gpt-4.1-nano",
+                messages=[
+                    {"role": "system", "content": "You are an AI assistant that specializes in database schema analysis."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=2000
+            )
+            
+            schema_analysis = response.choices[0].message.content
+            
+            # Try to extract JSON from the response
+            try:
+                # Find JSON content if wrapped in markdown code blocks
+                json_match = re.search(r'```(?:json)?\s*({[\s\S]*?})\s*```', schema_analysis)
+                if json_match:
+                    schema_analysis = json_match.group(1)
+                
+                # Parse the JSON
+                schema_dict = json.loads(schema_analysis)
+                
+                # Merge with our data dictionary
+                data_dict.update(schema_dict)
+            except Exception as e:
+                print(f"Error parsing schema analysis: {str(e)}")
+                # If JSON parsing fails, use the raw text
+                data_dict["schema_analysis"] = schema_analysis
+        except Exception as e:
+            print(f"Error analyzing schema with GPT: {str(e)}")
+            # Fallback to basic analysis
+            data_dict["schema_analysis"] = "Error analyzing schema with GPT"
+        
+        # Process the schema directly if it has a standard structure (TABLE_NAME, COLUMN_NAME, DATA_TYPE)
+        if all(col in df.columns for col in ['TABLE_NAME', 'COLUMN_NAME', 'DATA_TYPE']):
+            # Group by table name
+            tables = {}
+            for _, row in df.iterrows():
+                table_name = row['TABLE_NAME']
+                column_name = row['COLUMN_NAME']
+                data_type = row['DATA_TYPE']
+                
+                if table_name not in tables:
+                    tables[table_name] = []
+                
+                column_info = {
+                    "name": column_name,
+                    "type": data_type,
+                    "description": f"{column_name} of type {data_type}",
+                    "categorical": data_type.upper() in ["TEXT", "VARCHAR", "CHAR", "ENUM"],
+                    "constraints": {},
+                    "synonyms": [column_name.replace("_", " ")],
+                    "relationships": []
+                }
+                
+                # Add ordinal position if available
+                if 'ORDINAL_POSITION' in df.columns:
+                    column_info["ordinal_position"] = row.get('ORDINAL_POSITION')
+                
+                tables[table_name].append(column_info)
+            
+            # Add tables to data dictionary
+            data_dict["tables"] = tables
+            data_dict["fields_count"] = sum(len(columns) for columns in tables.values())
+        
+        return data_dict
+        
     def analyze_data(self, file_path: str, progress_callback=None) -> Dict[str, Any]:
         """
         Analyze a data file (CSV, JSON, XML, Excel) and generate an enriched data dictionary.

@@ -3,6 +3,7 @@ import json
 import pandas as pd
 import numpy as np
 import sqlite3
+import openai
 from flask import Flask, request, jsonify, send_from_directory
 from flask_cors import CORS
 from werkzeug.utils import secure_filename
@@ -52,6 +53,49 @@ if not os.path.exists(DATA_DICT_FOLDER):
 
 # Global processor instance
 processor = None
+
+def analyze_file_with_llm(file_path):
+    """Use GPT to analyze the file content and determine if it's a schema or data"""
+    try:
+        # Read a sample of the file (first 10 lines)
+        with open(file_path, 'r', encoding='utf-8') as f:
+            sample_content = ''.join([next(f) for _ in range(10) if f])
+        
+        # Create a prompt for GPT
+        prompt = f"""Analyze the following file content and determine if it contains schema information or actual data.
+        File content sample:
+        {sample_content}
+        
+        Please respond with a JSON object containing the following fields:
+        1. file_type: 'schema' or 'data'
+        2. description: A brief description of what the file contains
+        3. recommendation: How to process this file (e.g., 'Create database tables', 'Import as data')
+        """
+        
+        # Query GPT
+        client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        response = client.chat.completions.create(
+            model="gpt-4.1-nano",
+            messages=[
+                {"role": "system", "content": "You are an AI assistant that analyzes file content to determine if it contains schema information or actual data."},
+                {"role": "user", "content": prompt}
+            ],
+            response_format={"type": "json_object"},
+            max_tokens=500
+        )
+        
+        # Parse the response
+        analysis = json.loads(response.choices[0].message.content)
+        print(f"File analysis: {analysis}")
+        
+        return analysis
+    except Exception as e:
+        print(f"Error analyzing file with LLM: {str(e)}")
+        return {
+            "file_type": "unknown",
+            "description": f"Error analyzing file: {str(e)}",
+            "recommendation": "Process as regular data file"
+        }
 
 @app.route('/api/clear_cache', methods=['POST'])
 def clear_cache():
@@ -140,8 +184,12 @@ def upload_file():
     # Get file extension
     file_ext = os.path.splitext(filename)[1].lower()
     
-    # Preview data based on file type
+    # Use LLM to analyze the file content
+    file_analysis = analyze_file_with_llm(file_path)
+    
+    # Process the file based on LLM analysis and file type
     try:
+        # Read the file into a DataFrame based on its extension
         if file_ext == '.csv':
             df = pd.read_csv(file_path, encoding='utf-8', on_bad_lines='skip')
         elif file_ext == '.json':
@@ -204,12 +252,16 @@ def upload_file():
             'preview': df.head(5).to_dict(orient='records')
         }
         
-        # Use custom JSON encoder to handle NaN values
-        response = json.dumps({
+        # Add LLM analysis to the response
+        response_data = {
             'success': True,
             'file_path': file_path,
-            'stats': stats
-        }, cls=NpEncoder)
+            'stats': stats,
+            'analysis': file_analysis
+        }
+        
+        # Use custom JSON encoder to handle NaN values
+        response = json.dumps(response_data, cls=NpEncoder)
         
         return response, 200, {'Content-Type': 'application/json'}
         
@@ -223,6 +275,7 @@ def analyze_data():
     """Analyze a data file and generate an enriched data dictionary"""
     data = request.json
     file_path = data.get('file_path')
+    file_analysis = data.get('analysis', {})
     
     if not file_path or not os.path.exists(file_path):
         response = json.dumps({'error': 'Invalid file path'}, cls=NpEncoder)
@@ -233,9 +286,24 @@ def analyze_data():
         if not os.path.exists(DATA_DICT_FOLDER):
             os.makedirs(DATA_DICT_FOLDER)
         
-        # Process data file
+        # If no analysis was provided, perform it now
+        if not file_analysis:
+            file_analysis = analyze_file_with_llm(file_path)
+        
+        # Process data file based on analysis
         analyzer = DataPreplanner()
-        data_dict = analyzer.analyze_data(file_path)
+        
+        # If the file is a schema, use a different approach
+        is_schema = file_analysis.get('file_type') == 'schema'
+        
+        if is_schema:
+            print(f"Processing schema file: {file_path}")
+            # For schema files, we'll use a different approach
+            # The data dictionary will be derived directly from the schema
+            data_dict = analyzer.analyze_schema(file_path)
+        else:
+            # For regular data files, use the standard approach
+            data_dict = analyzer.analyze_data(file_path)
         
         # Save data dictionary
         dataset_name = os.path.basename(file_path).split('.')[0]
@@ -251,7 +319,8 @@ def analyze_data():
             'success': True,
             'data_dict_path': data_dict_path,
             'db_path': db_path,
-            'data_dict': data_dict
+            'data_dict': data_dict,
+            'analysis': file_analysis
         }, cls=NpEncoder)
         
         return response, 200, {'Content-Type': 'application/json'}
@@ -289,6 +358,10 @@ def process_query():
         
         # Process the query
         result = processor.process_query(query)
+        
+        # Make sure result is a dictionary
+        if isinstance(result, str):
+            result = {'sql_query': result, 'results': [], 'reasoning': 'Direct SQL query', 'execution_plan': result}
         
         # Convert DataFrame results to lists of dictionaries
         if isinstance(result.get('results'), pd.DataFrame):
@@ -757,10 +830,25 @@ def index():
                             <span><i class="fas fa-trash"></i> Clear Cache</span>
                         </button>
                     </div>
+                    <div id="uploadStatus" style="display: none; margin-top: 1rem;"></div>
                     <div id="fileInfo" style="display: none;"></div>
+                    <div id="analysisSection" style="display: none; margin-top: 1rem;">
+                        <h3>File Analysis</h3>
+                        <div class="stats-grid">
+                            <div class="stat-item">
+                                <div class="stat-label">File Type</div>
+                                <div class="stat-value" id="fileType">Unknown</div>
+                            </div>
+                            <div class="stat-item">
+                                <div class="stat-label">Description</div>
+                                <div class="stat-value" id="fileDescription">Unknown</div>
+                            </div>
+                        </div>
+                        <p><strong>Recommendation:</strong> <span id="fileRecommendation">Unknown</span></p>
+                    </div>
                 </div>
                 
-                <div class="card">
+                <div class="card" id="querySection" style="display: none;">
                     <h2><span class="icon"><i class="fas fa-search"></i></span> Query Data</h2>
                     <div class="form-group">
                         <label for="query">Ask a question about your data in natural language</label>
@@ -881,8 +969,7 @@ def index():
                 }
                 
                 const file = fileInput.files[0];
-                const formData = new FormData();
-                formData.append('file', file);
+                if (!file) return;
                 
                 // Show loading state
                 const uploadBtn = document.getElementById('uploadBtn');
@@ -892,8 +979,14 @@ def index():
                 
                 // Show loading message
                 const fileInfo = document.getElementById('fileInfo');
-                fileInfo.innerHTML = '<p>Uploading and processing file... Please wait.</p>';
+                fileInfo.innerHTML = '<p><i class="fas fa-spinner fa-spin"></i> Uploading and processing file... Please wait.</p>';
                 fileInfo.style.display = 'block';
+                
+                // Hide other sections
+                document.getElementById('analysisSection').style.display = 'none';
+                
+                const formData = new FormData();
+                formData.append('file', file);
                 
                 try {
                     // Upload file
@@ -944,10 +1037,52 @@ def index():
                                 <div class="stat-label">Columns</div>
                             </div>
                         </div>
-                        <h4>Data Types</h4>
-                        <p>${uploadData.stats.data_types}</p>
-                        <p>Analyzing data... <span class="loading" style="border-color: rgba(79, 70, 229, 0.3); border-top-color: var(--primary);"></span></p>
+                        <h4>Data Preview</h4>
+                        <div style="overflow-x: auto;">
+                            <table id="previewTable" class="data-table"></table>
+                        </div>
                     `;
+                    
+                    // Show data preview
+                    const previewTable = document.getElementById('previewTable');
+                    
+                    // Create header row
+                    if (uploadData.stats.preview.length > 0) {
+                        const headerRow = document.createElement('tr');
+                        Object.keys(uploadData.stats.preview[0]).forEach(key => {
+                            const th = document.createElement('th');
+                            th.textContent = key;
+                            headerRow.appendChild(th);
+                        });
+                        previewTable.appendChild(headerRow);
+                        
+                        // Create data rows
+                        uploadData.stats.preview.forEach(row => {
+                            const tr = document.createElement('tr');
+                            Object.values(row).forEach(value => {
+                                const td = document.createElement('td');
+                                td.textContent = value !== null ? value : 'null';
+                                tr.appendChild(td);
+                            });
+                            previewTable.appendChild(tr);
+                        });
+                    }
+                    
+                    // Display LLM analysis if available
+                    if (uploadData.analysis) {
+                        const analysisSection = document.getElementById('analysisSection');
+                        analysisSection.style.display = 'block';
+                        
+                        // Update analysis info
+                        document.getElementById('fileType').textContent = uploadData.analysis.file_type || 'Unknown';
+                        document.getElementById('fileDescription').textContent = uploadData.analysis.description || 'No description available';
+                        document.getElementById('fileRecommendation').textContent = uploadData.analysis.recommendation || 'No recommendation available';
+                        
+                        fileInfo.innerHTML += `<p>AI Analysis: <strong>${uploadData.analysis.file_type}</strong> file detected</p>`;
+                    }
+                    
+                    // Update status
+                    fileInfo.innerHTML += `<p>Analyzing data... <i class="fas fa-spinner fa-spin"></i></p>`;
                     
                     // Analyze data
                     console.log('Analyzing data...');
@@ -960,7 +1095,8 @@ def index():
                                 'Content-Type': 'application/json'
                             },
                             body: JSON.stringify({
-                                file_path: uploadData.file_path
+                                file_path: uploadData.file_path,
+                                analysis: uploadData.analysis
                             })
                         });
                         
@@ -1016,6 +1152,9 @@ def index():
                     // Reset button state
                     uploadBtn.innerHTML = originalBtnText;
                     uploadBtn.disabled = false;
+                    
+                    // Show query section
+                    document.getElementById('querySection').style.display = 'block';
                     
                 } catch (error) {
                     console.error('Error:', error);
