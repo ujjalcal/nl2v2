@@ -53,6 +53,44 @@ if not os.path.exists(DATA_DICT_FOLDER):
 # Global processor instance
 processor = None
 
+@app.route('/api/clear_cache', methods=['POST'])
+def clear_cache():
+    """Clear all cached files in the temp folder"""
+    try:
+        # Clear uploads folder
+        for file in os.listdir(UPLOAD_FOLDER):
+            file_path = os.path.join(UPLOAD_FOLDER, file)
+            if os.path.isfile(file_path):
+                os.remove(file_path)
+                
+        # Clear dictionaries folder
+        for file in os.listdir(DATA_DICT_FOLDER):
+            file_path = os.path.join(DATA_DICT_FOLDER, file)
+            if os.path.isfile(file_path):
+                os.remove(file_path)
+                
+        # Clear database files in gen folder
+        for file in os.listdir(GEN_FOLDER):
+            if file.endswith('.db'):
+                file_path = os.path.join(GEN_FOLDER, file)
+                if os.path.isfile(file_path):
+                    os.remove(file_path)
+        
+        # Reset the global processor
+        global processor
+        processor = None
+        
+        return jsonify({
+            'success': True,
+            'message': 'Cache cleared successfully'
+        })
+    except Exception as e:
+        print(f"Error clearing cache: {str(e)}")
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        }), 500
+
 @app.route('/api/upload', methods=['POST'])
 def upload_file():
     """Handle file uploads and process them"""
@@ -686,9 +724,14 @@ def index():
                             </div>
                         </div>
                     </div>
-                    <button id="uploadBtn">
-                        <span>Upload & Analyze</span>
-                    </button>
+                    <div class="button-group" style="display: flex; gap: 10px;">
+                        <button id="uploadBtn">
+                            <span>Upload & Analyze</span>
+                        </button>
+                        <button id="clearCacheBtn" style="background-color: #64748B;">
+                            <span><i class="fas fa-trash"></i> Clear Cache</span>
+                        </button>
+                    </div>
                     <div id="fileInfo" style="display: none;"></div>
                 </div>
                 
@@ -708,7 +751,69 @@ def index():
         
         <script>
             let dataDictPath = null;
-            let dbPath = "csv_database.db";
+            let dbPath = null;
+            
+            // Handle Clear Cache button click
+            document.getElementById('clearCacheBtn').addEventListener('click', async () => {
+                // Show loading state
+                const clearCacheBtn = document.getElementById('clearCacheBtn');
+                const originalBtnText = clearCacheBtn.innerHTML;
+                clearCacheBtn.innerHTML = '<span class="loading"></span><span>Clearing...</span>';
+                clearCacheBtn.disabled = true;
+                
+                try {
+                    // Call the clear cache API endpoint
+                    const response = await fetch('/api/clear_cache', {
+                        method: 'POST'
+                    });
+                    
+                    const result = await response.json();
+                    
+                    if (result.success) {
+                        // Show success message
+                        const fileInfo = document.getElementById('fileInfo');
+                        fileInfo.innerHTML = `
+                            <div class="success-message" style="margin-top: 1rem;">
+                                <i class="fas fa-check-circle"></i>
+                                <span><strong>Success!</strong> ${result.message}</span>
+                            </div>
+                        `;
+                        fileInfo.style.display = 'block';
+                        
+                        // Reset file input
+                        document.getElementById('file').value = '';
+                        const fileContent = document.querySelector('.file-input-content');
+                        fileContent.innerHTML = `
+                            <div class="file-input-icon"><i class="fas fa-file-alt"></i></div>
+                            <span>Drop your data file here or click to browse</span>
+                        `;
+                        
+                        // Reset global variables
+                        dataDictPath = null;
+                        dbPath = null;
+                        
+                        // Clear results
+                        document.getElementById('results').innerHTML = '';
+                        document.getElementById('query').value = '';
+                    } else {
+                        throw new Error(result.error || 'Failed to clear cache');
+                    }
+                } catch (error) {
+                    console.error('Error clearing cache:', error);
+                    const fileInfo = document.getElementById('fileInfo');
+                    fileInfo.innerHTML = `
+                        <div class="error-message">
+                            <i class="fas fa-exclamation-circle"></i>
+                            <span><strong>Error:</strong> ${error.message}</span>
+                        </div>
+                    `;
+                    fileInfo.style.display = 'block';
+                } finally {
+                    // Reset button state
+                    clearCacheBtn.innerHTML = originalBtnText;
+                    clearCacheBtn.disabled = false;
+                }
+            });
             
             // Update file input display when file is selected
             document.getElementById('file').addEventListener('change', (e) => {
