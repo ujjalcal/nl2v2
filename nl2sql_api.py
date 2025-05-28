@@ -220,6 +220,54 @@ def clear_cache():
         return jsonify(response), 500
 
 # Helper Functions
+def clean_yaml_response(content):
+    """
+    Clean up YAML content by removing code block markers if present.
+    Also handles other common formatting issues in LLM responses.
+    """
+    if not content:
+        return content
+        
+    # Handle code blocks with or without language specifiers
+    if '```' in content:
+        # Extract content between code block markers
+        lines = content.strip().split('\n')
+        cleaned_lines = []
+        in_code_block = False
+        yaml_block_started = False
+        
+        for line in lines:
+            # Skip code block markers and language specifiers
+            if line.startswith('```'):
+                if not in_code_block:
+                    in_code_block = True
+                    # Check if this is a YAML block
+                    if 'yaml' in line.lower() or 'yml' in line.lower():
+                        yaml_block_started = True
+                else:
+                    in_code_block = False
+                continue
+                
+            # Only include lines from YAML blocks or if not in any code block
+            if yaml_block_started or not in_code_block:
+                cleaned_lines.append(line)
+                
+        content = '\n'.join(cleaned_lines)
+    
+    # Handle any remaining formatting issues
+    content = content.strip()
+    
+    # If content still doesn't look like valid YAML, try to extract just the YAML part
+    if content and not content.startswith(('file_type:', 'reasoning:', 'sql:')):
+        # Look for common YAML starting patterns
+        for pattern in ['file_type:', 'reasoning:', 'sql:']:
+            if pattern in content:
+                content = content[content.find(pattern):]
+                break
+    
+    return content
+
+# Analysis Functions
 def analyze_file_with_llm(file_path):
     """
     Analyze the file content using GPT-4.1 Nano to determine if it contains
@@ -269,21 +317,34 @@ def analyze_file_with_llm(file_path):
     3. What are the key fields/columns and what do they represent?
     4. What types of questions would be interesting to ask about this data?
     
-    Format your response as JSON with the following structure:
-    {{"file_type": "schema" or "data", "description": "Brief description of what the file contains", "key_fields": [{{"name": "field_name", "description": "what this field represents"}}], "sample_questions": ["question 1", "question 2", "question 3"]}}
+    Format your response as YAML with the following structure:
+    ```yaml
+    file_type: schema or data
+    description: Brief description of what the file contains
+    key_fields:
+      - name: field_name
+        description: what this field represents
+    sample_questions:
+      - question 1
+      - question 2
+      - question 3
+    ```
     """
     
     try:
         response = client.chat.completions.create(
             model="gpt-4.1-nano",
             messages=[
-                {"role": "system", "content": "You are an AI assistant that analyzes file content to determine if it contains schema information or actual data."},
+                {"role": "system", "content": "You are an AI assistant that analyzes file content to determine if it contains schema information or actual data. Respond in YAML format."},
                 {"role": "user", "content": prompt}
-            ],
-            response_format={"type": "json_object"}
+            ]
         )
         
-        analysis = json.loads(response.choices[0].message.content)
+        # Get the response content and clean it
+        content = clean_yaml_response(response.choices[0].message.content)
+        
+        # Parse YAML response
+        analysis = yaml.safe_load(content)
         return analysis
     
     except Exception as e:
@@ -465,24 +526,27 @@ def convert_to_sql(query, table_info, data_dict_path):
     "{query}"
     
     Provide your reasoning step by step, then the final SQL query.
-    Format your response as JSON with the following structure:
-    {{
-        "reasoning": "Your step-by-step reasoning",
-        "sql": "The SQL query"
-    }}
+    Format your response as YAML with the following structure:
+    ```yaml
+    reasoning: Your step-by-step reasoning
+    sql: The SQL query
+    ```
     """
     
     try:
         response = client.chat.completions.create(
             model="gpt-4.1-nano",
             messages=[
-                {"role": "system", "content": "You are an AI assistant that converts natural language queries to SQL."},
+                {"role": "system", "content": "You are an AI assistant that converts natural language queries to SQL. Respond in YAML format."},
                 {"role": "user", "content": prompt}
-            ],
-            response_format={"type": "json_object"}
+            ]
         )
         
-        result = json.loads(response.choices[0].message.content)
+        # Get the response content and clean it
+        content = clean_yaml_response(response.choices[0].message.content)
+        
+        # Parse YAML response
+        result = yaml.safe_load(content)
         return result
     
     except Exception as e:
