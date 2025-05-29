@@ -139,6 +139,9 @@ def process_query():
                 # Get the SQL query
                 sql_query = sql_result['sql']
                 
+                # Clean the SQL query to remove comments and handle CTEs properly
+                sql_query = clean_sql_query(sql_query)
+                
                 # Fix table names in the query if needed
                 for table_name in table_info.keys():
                     # Clean up table name to ensure it's valid SQL
@@ -266,6 +269,49 @@ def clean_yaml_response(content):
                 break
     
     return content
+
+
+def clean_sql_query(sql_query):
+    """
+    Clean up SQL query by removing comments and handling CTEs properly.
+    
+    Args:
+        sql_query: The SQL query to clean
+        
+    Returns:
+        Cleaned SQL query string
+    """
+    if not sql_query:
+        return sql_query
+    
+    # Remove SQL comments (both -- and /* */ style)
+    lines = []
+    for line in sql_query.split('\n'):
+        # Remove inline comments starting with --
+        comment_pos = line.find('--')
+        if comment_pos >= 0:
+            line = line[:comment_pos].strip()
+        
+        # Skip empty lines after comment removal
+        if line.strip():
+            lines.append(line)
+    
+    # Join lines back together
+    cleaned_sql = ' '.join(lines)
+    
+    # Handle CTEs - if there's a WITH clause, make sure it's at the beginning of the query
+    if ' WITH ' in cleaned_sql.upper():
+        # Extract the CTE part and the main query
+        parts = cleaned_sql.upper().split(' WITH ', 1)
+        if len(parts) > 1 and parts[0].strip():
+            # There's content before WITH, which is invalid in SQLite
+            # Get the original case version
+            original_parts = cleaned_sql.split(' WITH ', 1)
+            if len(original_parts) > 1:
+                # Remove any content before WITH and use just the CTE
+                cleaned_sql = 'WITH ' + original_parts[1]
+        
+    return cleaned_sql
 
 # Analysis Functions
 def analyze_file_with_llm(file_path):
