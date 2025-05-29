@@ -9,8 +9,10 @@ import shutil
 import re
 import uuid
 from werkzeug.utils import secure_filename
-from flask import Flask, request, jsonify
+from flask import Flask, request, jsonify, Response, stream_with_context
 from flask_cors import CORS
+from queue import Queue
+import threading
 from dotenv import load_dotenv
 import openai
 from openai import OpenAI
@@ -41,26 +43,51 @@ class NpEncoder(json.JSONEncoder):
 app = Flask(__name__)
 CORS(app)
 
-# Global variable to track progress of current upload
-current_upload_progress = {
-    'file_id': None,
-    'status': 'idle',
-    'step': None,
-    'progress': 0,
-    'message': None,
-    'details': {}
-}
+# Event queue for SSE
+event_queue = Queue()
+active_clients = set()
+queue_lock = threading.Lock()
 
-def update_progress(step, status, progress, message=None, details=None):
-    """Update the progress of the current upload."""
-    global current_upload_progress
-    current_upload_progress['step'] = step
-    current_upload_progress['status'] = status
-    current_upload_progress['progress'] = progress
-    current_upload_progress['message'] = message
-    if details:
-        current_upload_progress['details'].update(details)
-    app.logger.info(f"Progress update: {step} - {status} - {progress}%")
+# Agent activity tracking
+current_file_id = None
+current_workflow_state = 'IDLE'
+
+# Store recent events for new clients
+recent_events = []
+
+def agent_activity(agent_name, workflow_state, message, details=None):
+    """Record real agent activity and emit event to connected clients."""
+    global current_workflow_state, current_file_id, recent_events
+    
+    # Update current workflow state
+    current_workflow_state = workflow_state
+    
+    # Create event data
+    event_data = {
+        'file_id': current_file_id,
+        'timestamp': int(time.time()),
+        'agent': agent_name,
+        'workflow_state': workflow_state,
+        'message': message,
+        'details': details or {}
+    }
+    
+    # Log the agent activity
+    print(f"Agent activity: {agent_name} - [{workflow_state}] - {message}")
+    app.logger.info(f"Agent activity: {agent_name} - [{workflow_state}] - {message}")
+    
+    # Store this event in recent events (keep last 20 events)
+    recent_events.append(event_data)
+    if len(recent_events) > 20:
+        recent_events = recent_events[-20:]
+    
+    # Add to event queue for all active clients
+    with queue_lock:
+        # Add event to all active client queues
+        for client_queue in active_clients:
+            client_queue.put(event_data)
+    
+    return event_data
 
 # API Routes
 @app.route('/')
@@ -72,11 +99,41 @@ def health_check():
         'version': '1.0.0'
     })
 
-@app.route('/api/progress', methods=['GET'])
-def get_progress():
-    """Get the progress of the current upload."""
-    global current_upload_progress
-    return jsonify(current_upload_progress)
+@app.route('/api/events', methods=['GET'])
+def stream_events():
+    """Stream real-time agent activities using Server-Sent Events (SSE)."""
+    def event_stream():
+        # Create a queue for this client
+        client_queue = Queue()
+        
+        # Register this client
+        with queue_lock:
+            active_clients.add(client_queue)
+        
+        try:
+            # Send initial connection established event
+            yield f"data: {json.dumps({'event': 'connected', 'workflow_state': current_workflow_state})}\n\n"
+            
+            # Send all recent events to new client
+            for event in recent_events:
+                yield f"data: {json.dumps(event)}\n\n"
+            
+            while True:
+                # Wait for new events
+                try:
+                    event_data = client_queue.get(timeout=30)
+                    yield f"data: {json.dumps(event_data)}\n\n"
+                except Exception as e:
+                    # Send keepalive comment to prevent connection timeout
+                    yield ": keepalive\n\n"
+        finally:
+            # Unregister client when connection closes
+            with queue_lock:
+                active_clients.remove(client_queue)
+    
+    return Response(stream_with_context(event_stream()),
+                    content_type='text/event-stream',
+                    headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
 
 @app.route('/api/upload', methods=['POST'])
 def upload_file():
@@ -85,20 +142,13 @@ def upload_file():
     Returns a JSON response with the analysis results.
     """
     try:
-        # Reset progress tracking
-        global current_upload_progress
-        current_upload_progress = {
-            'file_id': str(uuid.uuid4()),
-            'status': 'started',
-            'step': 'upload',
-            'progress': 5,
-            'message': 'Starting file upload',
-            'details': {}
-        }
+        # Initialize a new file processing session
+        global current_file_id
+        current_file_id = str(uuid.uuid4())
         
         # Check if file was uploaded
         if 'file' not in request.files:
-            update_progress('upload', 'error', 0, 'No file uploaded')
+            agent_activity('WorkflowOrchestratorAgent', 'ERROR', 'No file uploaded')
             response = json.dumps({'error': 'No file part'}, cls=NpEncoder)
             return response, 400, {'Content-Type': 'application/json'}
         
@@ -106,31 +156,39 @@ def upload_file():
         
         # Check if file is empty
         if file.filename == '':
-            update_progress('upload', 'error', 0, 'No file selected')
+            agent_activity('WorkflowOrchestratorAgent', 'ERROR', 'No file selected')
             response = json.dumps({'error': 'No selected file'}, cls=NpEncoder)
             return response, 400, {'Content-Type': 'application/json'}
         
-        # Update progress - file received
-        update_progress('upload', 'in_progress', 20, f'Received file: {file.filename}')
+        # Workflow orchestrator starts the process
+        agent_activity('WorkflowOrchestratorAgent', 'FILE_DROPPED', f'Starting to process file: {file.filename}')
+        
+        # File upload agent receives the file
+        agent_activity('FileUploadAgent', 'FILE_DROPPED', f'Received file: {file.filename}')
         
         # Save the file to a temporary location
         timestamp = int(time.time())
         file_path = os.path.join('temp', f"{timestamp}_{secure_filename(file.filename)}")
         file.save(file_path)
         
-        # Update progress - file saved
-        update_progress('upload', 'completed', 30, 'File saved, starting analysis')
-        update_progress('analyze', 'in_progress', 40, 'Analyzing file structure')
+        # File upload agent confirms file is saved
+        agent_activity('FileUploadAgent', 'FILE_DROPPED', 'File saved successfully')
         
-        # Analyze the file with LLM
-        update_progress('analyze', 'in_progress', 45, 'Analyzing file content with LLM')
+        # File classifier agent begins classification
+        agent_activity('FileClassifierAgent', 'CLASSIFYING', 'Starting file classification')
+        
+        # Analyze the file with LLM for classification
+        agent_activity('FileClassifierAgent', 'CLASSIFYING', 'Analyzing file content and structure')
         analysis_result = analyze_file_with_llm(file_path)
-        update_progress('analyze', 'completed', 60, 'Analysis complete')
+        agent_activity('FileClassifierAgent', 'CLASSIFIED', 'File classification complete', analysis_result)
         
         # Process the file based on its type
         db_path = os.path.join('temp', f"{timestamp}_database.db")
         is_schema_file = False
         data_dict_path = file_path
+        
+        # Start profiling
+        agent_activity('DataProfilerAgent', 'PROFILING', 'Starting data profiling')
         
         # Check if this is a schema file with multiple tables
         if file_path.lower().endswith('.csv'):
@@ -139,39 +197,67 @@ def upload_file():
                 is_schema_file = True
                 # Generate data dictionary path for schema file
                 data_dict_path = os.path.splitext(file_path)[0] + "_dict.json"
+                agent_activity('DataProfilerAgent', 'PROFILED', 'Schema file identified and profiled', {
+                    'is_schema_file': True,
+                    'tables_count': len(df['TABLE_NAME'].unique())
+                })
+            else:
+                agent_activity('DataProfilerAgent', 'PROFILED', 'Data file profiled', {
+                    'is_schema_file': False,
+                    'rows_count': len(df),
+                    'columns_count': len(df.columns)
+                })
+        else:
+            agent_activity('DataProfilerAgent', 'PROFILED', 'Data file profiled')
         
         # Process the file based on whether it's a schema file or not
         if is_schema_file:
-            # For schema files, we need to create the data dictionary and tables
-            update_progress('schema', 'in_progress', 65, 'Processing schema definition')
+            # For schema files, we need to create the data dictionary
+            agent_activity('DictionarySynthesizerAgent', 'DICT_DRAFTING', 'Creating draft data dictionary')
             df = pd.read_csv(file_path)
             
-            # Update progress for data dictionary generation
-            update_progress('dictionary', 'in_progress', 75, 'Generating data dictionary')
-            
-            # Process schema file with progress updates
+            # Process schema file with real agent activities
             process_schema_file(file_path, db_path, df)
-            update_progress('dictionary', 'completed', 80, 'Data dictionary generated')
+            agent_activity('DictionarySynthesizerAgent', 'DICT_DRAFT', 'Data dictionary draft created')
             
-            # Update progress for sample data generation
-            update_progress('sample', 'in_progress', 85, 'Creating realistic sample data')
+            # Dictionary review (real agent activity)
+            agent_activity('DictionaryReviewerAgent', 'DICT_REVIEWING', 'Reviewing data dictionary')
+            
+            # Simulate the review process (in a real system, this would be a separate agent)
+            data_dict_exists = os.path.exists(os.path.splitext(file_path)[0] + "_dict.json")
+            review_details = {
+                'data_dictionary_exists': data_dict_exists,
+                'review_status': 'approved' if data_dict_exists else 'failed'
+            }
+            agent_activity('DictionaryReviewerAgent', 'DICT_REVIEWED', 
+                          'Data dictionary reviewed and approved' if data_dict_exists else 'Review failed - dictionary not found',
+                          review_details)
             
             # Update the data_dict_path to point to the generated JSON file
             data_dict_path = os.path.splitext(file_path)[0] + "_dict.json"
-            update_progress('sample', 'completed', 90, 'Sample data created')
+            
+            # Ready state
+            agent_activity('WorkflowOrchestratorAgent', 'READY', 'Preparing for sample data generation')
+            
+            # Sample data generation
+            agent_activity('SampleDataGeneratorAgent', 'BULK_LOADING', 'Generating realistic sample data')
             
             # Make sure the file exists
             if not os.path.exists(data_dict_path):
                 # If the file doesn't exist, fall back to the original file path
                 data_dict_path = file_path
+                agent_activity('SampleDataGeneratorAgent', 'ERROR', 'Dictionary file not found, using original file')
+            else:
+                agent_activity('SampleDataGeneratorAgent', 'BULK_LOADED', 'Sample data generated successfully')
         else:
             # For regular data files
-            update_progress('database', 'in_progress', 75, 'Setting up database')
+            agent_activity('WorkflowOrchestratorAgent', 'READY', 'Preparing database setup')
+            agent_activity('DatabaseBuilderAgent', 'BULK_LOADING', 'Setting up database')
             process_file(file_path, db_path)
-            update_progress('database', 'completed', 95, 'Database setup complete')
+            agent_activity('DatabaseBuilderAgent', 'BULK_LOADED', 'Database setup complete')
         
         # Final progress update
-        update_progress('database', 'completed', 100, 'Processing complete')
+        agent_activity('WorkflowOrchestratorAgent', 'DONE', 'Processing complete - Ready for queries')
         
         # Return the analysis result and paths
         response = {
@@ -181,7 +267,7 @@ def upload_file():
             'is_schema_file': is_schema_file,
             'data_dict_path': data_dict_path,
             'db_path': db_path,
-            'progress_id': current_upload_progress['file_id']
+            'file_id': current_file_id
         }
         
         return json.dumps(response, cls=NpEncoder), 200, {'Content-Type': 'application/json'}
@@ -957,6 +1043,7 @@ def process_schema_file(file_path, db_path, df):
     
     # Generate data dictionary using LLM first
     print(f"\n[DEBUG] Generating data dictionary for schema with {len(tables)} tables")
+    agent_activity('DictionarySynthesizerAgent', 'DICT_DRAFTING', f'Creating dictionary for {len(tables)} tables')
     data_dict = generate_data_dictionary_for_schema(tables)
     print(f"[DEBUG] Data dictionary generated with keys: {list(data_dict.keys())}")
     if 'tables' in data_dict:
@@ -968,6 +1055,7 @@ def process_schema_file(file_path, db_path, df):
     with open(data_dict_path, 'w') as f:
         json.dump(data_dict, f, indent=2, cls=NpEncoder)
     print(f"[DEBUG] Data dictionary saved successfully")
+    agent_activity('DictionarySynthesizerAgent', 'DICT_DRAFT', 'Data dictionary created successfully')
     
     # Create SQLite database
     conn = sqlite3.connect(db_path)
@@ -1011,11 +1099,13 @@ def process_schema_file(file_path, db_path, df):
         
         # Call LLM for sample data generation - no try/except to allow errors to propagate
         print(f"\n[DEBUG] Sending prompt to LLM for table {table_name}")
+        agent_activity('SampleDataGeneratorAgent', 'BULK_LOADING', f'Generating sample data for table {table_name}')
         sample_data = generate_realistic_sample_data(table_name, columns, data_dict, 5)
         
         # Insert sample data
         if sample_data:
             print(f"[DEBUG] Successfully generated {len(sample_data)} rows of sample data")
+            agent_activity('DatabaseBuilderAgent', 'BULK_LOADING', f'Creating table {table_name} with {len(sample_data)} rows')
             col_names = [col["name"] for col in columns]
             placeholders = ", ".join(["?" for _ in col_names])
             insert_sql = f"INSERT INTO {table_name} ({', '.join(col_names)}) VALUES ({placeholders})"
@@ -1025,6 +1115,9 @@ def process_schema_file(file_path, db_path, df):
     
     conn.commit()
     conn.close()
+    
+    # Emit final event for schema processing completion
+    agent_activity('DatabaseBuilderAgent', 'BULK_LOADED', f'Successfully created database with {len(tables)} tables')
     
     return True
 

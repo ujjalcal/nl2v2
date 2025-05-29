@@ -346,6 +346,16 @@ def index():
             font-size: 0.9rem;
         }
         
+        .progress-message .workflow-state {
+            background-color: #4b5563;
+            color: white;
+            padding: 0.1rem 0.3rem;
+            border-radius: 3px;
+            font-size: 0.7rem;
+            font-family: monospace;
+            margin-left: 0.3rem;
+        }
+        
         /* Spinning cog animation */
         .fa-spin {
             animation: fa-spin 2s infinite linear;
@@ -805,70 +815,54 @@ def index():
                 return new Promise(resolve => setTimeout(resolve, duration));
             }
             
-            // Function to poll progress updates from the server and show as chatbot messages
-            async function pollProgressUpdates(progressId, lastStep = null, lastMessage = null) {
-                try {
-                    console.log('Polling for progress updates');
-                    const response = await fetch('/api/progress');
-                    if (!response.ok) {
-                        setTimeout(() => pollProgressUpdates(progressId, lastStep, lastMessage), 500);
-                        return;
-                    }
-                    
-                    const progressData = await response.json();
-                    console.log('Progress data received:', progressData);
-                    
-                    // If we have progress data with a step and message
-                    if (progressData && progressData.step && progressData.message) {
-                        // Only add a new message if the step or message has changed
-                        if (progressData.step !== lastStep || progressData.message !== lastMessage) {
-                            // Map step to agent name
-                            let agentName = '';
-                            switch(progressData.step) {
-                                case 'upload':
-                                    agentName = 'FileUploadAgent';
-                                    break;
-                                case 'analyze':
-                                    agentName = 'FileClassifierAgent';
-                                    break;
-                                case 'schema':
-                                    agentName = 'SchemaProcessorAgent';
-                                    break;
-                                case 'dictionary':
-                                    agentName = 'DictionarySynthesizerAgent';
-                                    break;
-                                case 'sample':
-                                    agentName = 'SampleDataGeneratorAgent';
-                                    break;
-                                case 'database':
-                                    agentName = 'DatabaseBuilderAgent';
-                                    break;
-                                default:
-                                    agentName = 'WorkflowOrchestratorAgent';
-                            }
-                            
-                            // Create a message showing which agent is active and what it's doing
-                            const statusMessage = `<p><strong>${agentName}</strong>: ${progressData.message}</p>`;
-                            addBotMessage(statusMessage, true); // true means this is a progress message
-                            
-                            // Update last step and message
-                            lastStep = progressData.step;
-                            lastMessage = progressData.message;
+            // Function to subscribe to real-time agent activities using Server-Sent Events (SSE)
+            function subscribeToAgentActivities() {
+                console.log('Subscribing to agent activities via SSE');
+                
+                // Create a new EventSource connection to the server
+                const eventSource = new EventSource('/api/events');
+                
+                // Set up event listeners
+                eventSource.onopen = (event) => {
+                    console.log('SSE connection established');
+                };
+                
+                // Handle incoming agent activity events
+                eventSource.onmessage = (event) => {
+                    try {
+                        const eventData = JSON.parse(event.data);
+                        console.log('Agent activity received:', eventData);
+                        
+                        // Skip the initial connection event
+                        if (eventData.event === 'connected') {
+                            console.log('Connected to agent activity stream');
+                            return;
                         }
                         
-                        // Continue polling if not complete
-                        if (progressData.progress < 100 && progressData.status !== 'error') {
-                            setTimeout(() => pollProgressUpdates(progressId, lastStep, lastMessage), 500);
+                        // IMPORTANT: Always display every agent event that comes in
+                        console.log('Displaying agent event:', eventData.agent, eventData.workflow_state, eventData.message);
+                        
+                        // Create a message showing which agent is active, the workflow state, and what it's doing
+                        const statusMessage = `<p><strong>${eventData.agent}</strong> <span class="workflow-state">[${eventData.workflow_state}]</span>: ${eventData.message}</p>`;
+                        addBotMessage(statusMessage, true); // true means this is a progress message
+                        
+                        // If we're done, close the connection
+                        if (eventData.workflow_state === 'DONE' || eventData.workflow_state === 'ERROR') {
+                            console.log('Workflow complete, closing SSE connection');
+                            eventSource.close();
                         }
-                    } else {
-                        // If no progress data yet, keep polling
-                        setTimeout(() => pollProgressUpdates(progressId, lastStep, lastMessage), 500);
+                    } catch (error) {
+                        console.error('Error processing agent activity:', error);
                     }
-                } catch (error) {
-                    console.error('Error polling progress:', error);
-                    // Continue polling even if there's an error
-                    setTimeout(() => pollProgressUpdates(progressId, lastStep, lastMessage), 500);
-                }
+                };
+                
+                // Handle errors
+                eventSource.onerror = (error) => {
+                    console.error('SSE connection error:', error);
+                    eventSource.close();
+                };
+                
+                return eventSource;
             }
             
             // Function to upload file with progress tracking
@@ -877,8 +871,11 @@ def index():
                     // Show typing indicator
                     addTypingIndicator();
                     
+                    // Subscribe to real-time agent activities before uploading
+                    const eventSource = subscribeToAgentActivities();
+                    
                     // Add initial message about file upload
-                    addBotMessage(`<p><strong>WorkflowOrchestratorAgent</strong>: Starting to process file: ${file.name}</p>`, true);
+                    addBotMessage(`<p><strong>WorkflowOrchestratorAgent</strong> <span class="workflow-state">[INITIALIZING]</span>: Starting to process file: ${file.name}</p>`, true);
                     
                     // Create form data
                     const formData = new FormData();
@@ -891,19 +888,17 @@ def index():
                     });
                     
                     if (!response.ok) {
+                        // Close the event source on error
+                        eventSource.close();
                         const errorText = await response.text();
                         throw new Error(`Server error: ${response.status} ${errorText}`);
                     }
                     
-                    // Start polling for progress updates immediately
-                    console.log('Starting progress polling');
-                    pollProgressUpdates(null, null, null);
-                    
                     // Wait for the response to be parsed
                     const result = await response.json();
                     
-                    // Add a final completion message
-                    addBotMessage(`<p><strong>WorkflowOrchestratorAgent</strong>: Processing complete! File has been successfully processed.</p>`, true);
+                    // Note: We don't need to close the eventSource here as it will
+                    // automatically close when the workflow reaches DONE or ERROR state
                     
                     // Remove typing indicator
                     removeTypingIndicator();
