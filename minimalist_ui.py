@@ -173,7 +173,6 @@ def index():
             cursor: pointer;
             display: flex;
             align-items: center;
-            justify-content: center;
             transition: color 0.2s;
         }
         
@@ -322,6 +321,74 @@ def index():
             border-radius: 0.25rem;
         }
         
+        .progress-container {
+            margin-top: 0.5rem;
+            margin-bottom: 1rem;
+            display: none;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+        
+        .progress-bar-container {
+            height: 6px;
+            background-color: #e5e7eb;
+            border-radius: 3px;
+            overflow: hidden;
+        }
+        
+        .progress-bar {
+            height: 100%;
+            background-color: var(--primary-color);
+            width: 0%;
+            transition: width 0.3s ease;
+        }
+        
+        .progress-status {
+            font-size: 0.875rem;
+            color: var(--secondary-text-color);
+        }
+        
+        .progress-steps {
+            margin-top: 0.5rem;
+            font-size: 0.875rem;
+            color: var(--secondary-text-color);
+            display: flex;
+            flex-direction: column;
+            gap: 0.25rem;
+        }
+        
+        .progress-step {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+        
+        .step-indicator {
+            width: 18px;
+            height: 18px;
+            border-radius: 50%;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 0.75rem;
+            flex-shrink: 0;
+        }
+        
+        .step-pending {
+            background-color: #e5e7eb;
+            color: var(--secondary-text-color);
+        }
+        
+        .step-active {
+            background-color: #3b82f6;
+            color: white;
+        }
+        
+        .step-completed {
+            background-color: var(--primary-color);
+            color: white;
+        }
+        
         @media (max-width: 768px) {
             .chat-container {
                 padding: 0.5rem;
@@ -356,6 +423,15 @@ def index():
             </div>
             
             <div class="file-preview" id="filePreview"></div>
+            
+            <!-- Progress container for file processing -->
+            <div class="progress-container" id="progressContainer">
+                <div class="progress-bar-container">
+                    <div class="progress-bar" id="progressBar"></div>
+                </div>
+                <div class="progress-status" id="progressStatus">Processing file...</div>
+                <div class="progress-steps" id="progressSteps"></div>
+            </div>
             
             <div class="input-container">
                 <label for="file" class="attachment-button" title="Upload a file">
@@ -439,6 +515,146 @@ def index():
                 const indicator = document.getElementById('typingIndicator');
                 if (indicator) {
                     indicator.remove();
+                }
+            }
+            
+            // Function to handle file upload with progress tracking
+            async function uploadFile(file) {
+                try {
+                    // Show typing indicator
+                    addTypingIndicator();
+                    
+                    // Show progress container
+                    const progressContainer = document.getElementById('progressContainer');
+                    const progressBar = document.getElementById('progressBar');
+                    const progressStatus = document.getElementById('progressStatus');
+                    const progressSteps = document.getElementById('progressSteps');
+                    
+                    progressContainer.style.display = 'flex';
+                    progressBar.style.width = '10%';
+                    progressStatus.textContent = 'Uploading file...';
+                    
+                    // Initialize progress steps
+                    const steps = [
+                        { id: 'upload', text: 'Uploading file', status: 'active' },
+                        { id: 'analyze', text: 'Analyzing file structure', status: 'pending' },
+                        { id: 'schema', text: 'Processing schema', status: 'pending' },
+                        { id: 'dictionary', text: 'Generating data dictionary', status: 'pending' },
+                        { id: 'sample', text: 'Creating sample data', status: 'pending' },
+                        { id: 'database', text: 'Setting up database', status: 'pending' }
+                    ];
+                    
+                    // Render initial steps
+                    function renderProgressSteps() {
+                        progressSteps.innerHTML = '';
+                        steps.forEach((step, index) => {
+                            const stepElement = document.createElement('div');
+                            stepElement.className = 'progress-step';
+                            stepElement.innerHTML = `
+                                <div class="step-indicator step-${step.status}">${index + 1}</div>
+                                <div>${step.text}</div>
+                            `;
+                            progressSteps.appendChild(stepElement);
+                        });
+                    }
+                    
+                    function updateStep(stepId, status, progress) {
+                        const stepIndex = steps.findIndex(s => s.id === stepId);
+                        if (stepIndex >= 0) {
+                            steps[stepIndex].status = status;
+                            renderProgressSteps();
+                            
+                            // Update progress bar
+                            if (progress) {
+                                progressBar.style.width = `${progress}%`;
+                            }
+                        }
+                    }
+                    
+                    renderProgressSteps();
+                    
+                    // Create form data
+                    const formData = new FormData();
+                    formData.append('file', file);
+                    
+                    // Upload file
+                    const response = await fetch('/api/upload', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    if (!response.ok) {
+                        const errorText = await response.text();
+                        throw new Error(`Server error: ${response.status} ${errorText}`);
+                    }
+                    
+                    updateStep('upload', 'completed', 30);
+                    updateStep('analyze', 'active', 40);
+                    
+                    // Process response
+                    const result = await response.json();
+                    
+                    // Update progress for remaining steps
+                    updateStep('analyze', 'completed', 60);
+                    
+                    if (result.is_schema_file) {
+                        updateStep('schema', 'completed', 70);
+                        updateStep('dictionary', 'completed', 80);
+                        updateStep('sample', 'completed', 90);
+                    }
+                    
+                    updateStep('database', 'completed', 100);
+                    
+                    // Hide progress after a short delay
+                    setTimeout(() => {
+                        progressContainer.style.display = 'none';
+                    }, 2000);
+                    
+                    // Remove typing indicator
+                    removeTypingIndicator();
+                    
+                    if (result.success) {
+                        // Store paths for later use
+                        dataDictPath = result.data_dict_path;
+                        dbPath = result.db_path;
+                        
+                        // Add success message
+                        let message = `<p><i class="fas fa-check-circle" style="color: var(--primary-color);"></i> File uploaded and processed successfully!</p>`;
+                        
+                        // Add analysis details
+                        if (result.analysis) {
+                            if (result.analysis.file_type) {
+                                message += `<p>File type: <strong>${result.analysis.file_type}</strong></p>`;
+                            }
+                            
+                            if (result.analysis.tables && result.analysis.tables.length > 0) {
+                                message += `<p>Tables found: <strong>${result.analysis.tables.length}</strong></p>`;
+                                message += `<ul>`;
+                                result.analysis.tables.forEach(table => {
+                                    message += `<li>${table.name} (${table.rows} rows, ${table.columns} columns)</li>`;
+                                });
+                                message += `</ul>`;
+                            }
+                            
+                            if (result.is_schema_file) {
+                                message += `<p><i class="fas fa-info-circle"></i> This is a schema file. Tables have been created with sample data.</p>`;
+                            }
+                        }
+                        
+                        message += `<p class="completion-message">You can now ask questions about your data!</p>`;
+                        
+                        addBotMessage(message);
+                    } else {
+                        throw new Error(result.error || 'Failed to process file');
+                    }
+                } catch (error) {
+                    console.error('Error uploading file:', error);
+                    removeTypingIndicator();
+                    
+                    // Hide progress container
+                    document.getElementById('progressContainer').style.display = 'none';
+                    
+                    addBotMessage(`<p style="color: #ef4444;"><i class="fas fa-exclamation-circle"></i> <strong>Error:</strong> ${error.message}</p>`);
                 }
             }
             
@@ -579,11 +795,60 @@ def index():
                 }
             });
             
-            // Function to upload file
+            // Function to upload file with progress tracking
             async function uploadFile(file) {
                 try {
                     // Show typing indicator
                     addTypingIndicator();
+                    
+                    // Show progress container
+                    const progressContainer = document.getElementById('progressContainer');
+                    const progressBar = document.getElementById('progressBar');
+                    const progressStatus = document.getElementById('progressStatus');
+                    const progressSteps = document.getElementById('progressSteps');
+                    
+                    progressContainer.style.display = 'flex';
+                    progressBar.style.width = '10%';
+                    progressStatus.textContent = 'Uploading file...';
+                    
+                    // Initialize progress steps
+                    const steps = [
+                        { id: 'upload', text: 'Uploading file', status: 'active' },
+                        { id: 'analyze', text: 'Analyzing file structure', status: 'pending' },
+                        { id: 'schema', text: 'Processing schema', status: 'pending' },
+                        { id: 'dictionary', text: 'Generating data dictionary', status: 'pending' },
+                        { id: 'sample', text: 'Creating sample data', status: 'pending' },
+                        { id: 'database', text: 'Setting up database', status: 'pending' }
+                    ];
+                    
+                    // Render initial steps
+                    renderProgressSteps();
+                    
+                    function renderProgressSteps() {
+                        progressSteps.innerHTML = '';
+                        steps.forEach((step, index) => {
+                            const stepElement = document.createElement('div');
+                            stepElement.className = 'progress-step';
+                            stepElement.innerHTML = `
+                                <div class="step-indicator step-${step.status}">${index + 1}</div>
+                                <div>${step.text}</div>
+                            `;
+                            progressSteps.appendChild(stepElement);
+                        });
+                    }
+                    
+                    function updateStep(stepId, status, progress) {
+                        const stepIndex = steps.findIndex(s => s.id === stepId);
+                        if (stepIndex >= 0) {
+                            steps[stepIndex].status = status;
+                            renderProgressSteps();
+                            
+                            // Update progress bar
+                            if (progress) {
+                                progressBar.style.width = `${progress}%`;
+                            }
+                        }
+                    }
                     
                     // Create form data
                     const formData = new FormData();
@@ -600,7 +865,27 @@ def index():
                         throw new Error(`Server error: ${response.status} ${errorText}`);
                     }
                     
+                    updateStep('upload', 'completed', 30);
+                    updateStep('analyze', 'active', 40);
+                    
+                    // Process response
                     const result = await response.json();
+                    
+                    // Update progress for remaining steps
+                    updateStep('analyze', 'completed', 60);
+                    
+                    if (result.is_schema_file) {
+                        updateStep('schema', 'completed', 70);
+                        updateStep('dictionary', 'completed', 80);
+                        updateStep('sample', 'completed', 90);
+                    }
+                    
+                    updateStep('database', 'completed', 100);
+                    
+                    // Hide progress after a short delay
+                    setTimeout(() => {
+                        progressContainer.style.display = 'none';
+                    }, 2000);
                     
                     // Remove typing indicator
                     removeTypingIndicator();
@@ -610,76 +895,41 @@ def index():
                         dataDictPath = result.data_dict_path;
                         dbPath = result.db_path;
                         
-                        // Display analysis results
-                        const analysis = result.analysis;
-                        let analysisHtml = '';
+                        // Add success message
+                        let message = `<p><i class="fas fa-check-circle" style="color: var(--primary-color);"></i> File uploaded and processed successfully!</p>`;
                         
-                        if (analysis.file_type) {
-                            analysisHtml += `
-                                <p>I've analyzed your file and detected it's a <strong>${analysis.file_type}</strong> file.</p>
-                                <p style="margin-top: 0.5rem;">${analysis.description}</p>
-                            `;
-                            
-                            if (analysis.key_fields && analysis.key_fields.length > 0) {
-                                analysisHtml += `<p style="margin-top: 0.5rem;"><strong>Key fields:</strong></p><ul style="margin-left: 1.5rem;">`;
-                                analysis.key_fields.forEach(field => {
-                                    analysisHtml += `<li><strong>${field.name}</strong>: ${field.description}</li>`;
-                                });
-                                analysisHtml += `</ul>`;
+                        // Add analysis details
+                        if (result.analysis) {
+                            if (result.analysis.file_type) {
+                                message += `<p>File type: <strong>${result.analysis.file_type}</strong></p>`;
+                                message += `<p>${result.analysis.description || ''}</p>`;
                             }
                             
-                            if (analysis.sample_questions && analysis.sample_questions.length > 0) {
-                                analysisHtml += `
-                                    <p style="margin-top: 0.5rem;"><strong>You can ask questions like:</strong></p>
-                                    <ul style="margin-left: 1.5rem;">
-                                `;
-                                analysis.sample_questions.forEach(question => {
-                                    analysisHtml += `<li>${question}</li>`;
+                            if (result.analysis.tables && result.analysis.tables.length > 0) {
+                                message += `<p>Tables found: <strong>${result.analysis.tables.length}</strong></p>`;
+                                message += `<ul>`;
+                                result.analysis.tables.forEach(table => {
+                                    message += `<li>${table.name} (${table.rows} rows, ${table.columns} columns)</li>`;
                                 });
-                                analysisHtml += `</ul>`;
+                                message += `</ul>`;
                             }
-                        } else if (analysis.error) {
-                            analysisHtml = `<p style="color: #ef4444;"><i class="fas fa-exclamation-circle"></i> <strong>Error:</strong> ${analysis.error}</p>`;
+                            
+                            if (result.is_schema_file) {
+                                message += `<p><i class="fas fa-info-circle"></i> This is a schema file. Tables have been created with sample data.</p>`;
+                            }
+                            
+                            if (result.analysis.sample_questions && result.analysis.sample_questions.length > 0) {
+                                message += `<p><strong>You can ask questions like:</strong></p><ul>`;
+                                result.analysis.sample_questions.forEach(question => {
+                                    message += `<li>${question}</li>`;
+                                });
+                                message += `</ul>`;
+                            }
                         }
                         
-                        // Add processing steps
-                        analysisHtml += `
-                            <div style="margin-top: 1rem; border-left: 3px solid #8b5cf6; padding-left: 0.75rem; margin-bottom: 0.75rem;">
-                                <p><i class="fas fa-database"></i> <strong>Setting up your database for querying...</strong></p>
-                            </div>
-                            
-                            <div style="margin-top: 0.5rem;">
-                                <p><strong>Processing Pipeline:</strong></p>
-                                <div class="processing-step">
-                                    <i class="fas fa-check-circle step-icon"></i>
-                                    <span>File uploaded successfully</span>
-                                </div>
-                                <div class="processing-step">
-                                    <i class="fas fa-check-circle step-icon"></i>
-                                    <span>Data parsed and validated</span>
-                                </div>
-                                <div class="processing-step">
-                                    <i class="fas fa-check-circle step-icon"></i>
-                                    <span>Database created</span>
-                                </div>
-                                <div class="processing-step">
-                                    <i class="fas fa-check-circle step-icon"></i>
-                                    <span>Schema analyzed</span>
-                                </div>
-                                <div class="processing-step">
-                                    <i class="fas fa-check-circle step-icon"></i>
-                                    <span>Finalizing database</span>
-                                </div>
-                            </div>
-                            
-                            <div class="completion-message">
-                                <p><i class="fas fa-check-circle"></i> <strong>Analysis complete!</strong> Your data is now ready for querying.</p>
-                                <p style="margin-top: 0.25rem; font-size: 0.875rem;">You can now ask questions about your data using natural language.</p>
-                            </div>
-                        `;
+                        message += `<p class="completion-message">You can now ask questions about your data!</p>`;
                         
-                        // Add bot message with analysis
-                        addBotMessage(analysisHtml);
+                        addBotMessage(message);
                         
                         // Enable send button for queries
                         sendButton.disabled = !queryInput.value.trim();
@@ -689,6 +939,10 @@ def index():
                 } catch (error) {
                     console.error('Error uploading file:', error);
                     removeTypingIndicator();
+                    
+                    // Hide progress container
+                    document.getElementById('progressContainer').style.display = 'none';
+                    
                     addBotMessage(`<p style="color: #ef4444;"><i class="fas fa-exclamation-circle"></i> <strong>Error:</strong> ${error.message}</p>`);
                 }
             }
@@ -698,7 +952,7 @@ def index():
                 try {
                     // Check if database is ready
                     if (!dbPath || !dataDictPath) {
-                        throw new Error('Please upload a file first');
+                        throw new Error('Please upload a data file first.');
                     }
                     
                     // Show typing indicator
