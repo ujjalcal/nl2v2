@@ -6,7 +6,9 @@ import numpy as np
 import yaml
 import xmltodict
 import shutil
-import re  # Ensure re is imported at the top level
+import re
+import uuid
+from werkzeug.utils import secure_filename
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
@@ -39,6 +41,27 @@ class NpEncoder(json.JSONEncoder):
 app = Flask(__name__)
 CORS(app)
 
+# Global variable to track progress of current upload
+current_upload_progress = {
+    'file_id': None,
+    'status': 'idle',
+    'step': None,
+    'progress': 0,
+    'message': None,
+    'details': {}
+}
+
+def update_progress(step, status, progress, message=None, details=None):
+    """Update the progress of the current upload."""
+    global current_upload_progress
+    current_upload_progress['step'] = step
+    current_upload_progress['status'] = status
+    current_upload_progress['progress'] = progress
+    current_upload_progress['message'] = message
+    if details:
+        current_upload_progress['details'].update(details)
+    app.logger.info(f"Progress update: {step} - {status} - {progress}%")
+
 # API Routes
 @app.route('/')
 def health_check():
@@ -49,30 +72,60 @@ def health_check():
         'version': '1.0.0'
     })
 
+@app.route('/api/progress', methods=['GET'])
+def get_progress():
+    """Get the progress of the current upload."""
+    global current_upload_progress
+    return jsonify(current_upload_progress)
+
 @app.route('/api/upload', methods=['POST'])
 def upload_file():
     """
     Handle file upload and process the file based on its type.
     Returns a JSON response with the analysis results.
     """
-    if 'file' not in request.files:
-        response = json.dumps({'error': 'No file part'}, cls=NpEncoder)
-        return response, 400, {'Content-Type': 'application/json'}
-    
-    file = request.files['file']
-    
-    if file.filename == '':
-        response = json.dumps({'error': 'No selected file'}, cls=NpEncoder)
-        return response, 400, {'Content-Type': 'application/json'}
-    
-    # Save the file to a temporary location
-    timestamp = int(time.time())
-    file_path = os.path.join('temp', f"{timestamp}_{file.filename}")
-    file.save(file_path)
-    
     try:
+        # Reset progress tracking
+        global current_upload_progress
+        current_upload_progress = {
+            'file_id': str(uuid.uuid4()),
+            'status': 'started',
+            'step': 'upload',
+            'progress': 5,
+            'message': 'Starting file upload',
+            'details': {}
+        }
+        
+        # Check if file was uploaded
+        if 'file' not in request.files:
+            update_progress('upload', 'error', 0, 'No file uploaded')
+            response = json.dumps({'error': 'No file part'}, cls=NpEncoder)
+            return response, 400, {'Content-Type': 'application/json'}
+        
+        file = request.files['file']
+        
+        # Check if file is empty
+        if file.filename == '':
+            update_progress('upload', 'error', 0, 'No file selected')
+            response = json.dumps({'error': 'No selected file'}, cls=NpEncoder)
+            return response, 400, {'Content-Type': 'application/json'}
+        
+        # Update progress - file received
+        update_progress('upload', 'in_progress', 20, f'Received file: {file.filename}')
+        
+        # Save the file to a temporary location
+        timestamp = int(time.time())
+        file_path = os.path.join('temp', f"{timestamp}_{secure_filename(file.filename)}")
+        file.save(file_path)
+        
+        # Update progress - file saved
+        update_progress('upload', 'completed', 30, 'File saved, starting analysis')
+        update_progress('analyze', 'in_progress', 40, 'Analyzing file structure')
+        
         # Analyze the file with LLM
+        update_progress('analyze', 'in_progress', 45, 'Analyzing file content with LLM')
         analysis_result = analyze_file_with_llm(file_path)
+        update_progress('analyze', 'completed', 60, 'Analysis complete')
         
         # Process the file based on its type
         db_path = os.path.join('temp', f"{timestamp}_database.db")
@@ -90,11 +143,22 @@ def upload_file():
         # Process the file based on whether it's a schema file or not
         if is_schema_file:
             # For schema files, we need to create the data dictionary and tables
+            update_progress('schema', 'in_progress', 65, 'Processing schema definition')
             df = pd.read_csv(file_path)
+            
+            # Update progress for data dictionary generation
+            update_progress('dictionary', 'in_progress', 75, 'Generating data dictionary')
+            
+            # Process schema file with progress updates
             process_schema_file(file_path, db_path, df)
+            update_progress('dictionary', 'completed', 80, 'Data dictionary generated')
+            
+            # Update progress for sample data generation
+            update_progress('sample', 'in_progress', 85, 'Creating realistic sample data')
             
             # Update the data_dict_path to point to the generated JSON file
             data_dict_path = os.path.splitext(file_path)[0] + "_dict.json"
+            update_progress('sample', 'completed', 90, 'Sample data created')
             
             # Make sure the file exists
             if not os.path.exists(data_dict_path):
@@ -102,7 +166,12 @@ def upload_file():
                 data_dict_path = file_path
         else:
             # For regular data files
+            update_progress('database', 'in_progress', 75, 'Setting up database')
             process_file(file_path, db_path)
+            update_progress('database', 'completed', 95, 'Database setup complete')
+        
+        # Final progress update
+        update_progress('database', 'completed', 100, 'Processing complete')
         
         # Return the analysis result and paths
         response = {
@@ -111,7 +180,8 @@ def upload_file():
             'analysis': analysis_result,
             'is_schema_file': is_schema_file,
             'data_dict_path': data_dict_path,
-            'db_path': db_path
+            'db_path': db_path,
+            'progress_id': current_upload_progress['file_id']
         }
         
         return json.dumps(response, cls=NpEncoder), 200, {'Content-Type': 'application/json'}

@@ -322,71 +322,42 @@ def index():
         }
         
         .progress-container {
-            margin-top: 0.5rem;
-            margin-bottom: 1rem;
-            display: none;
-            flex-direction: column;
-            gap: 0.5rem;
+            display: none; /* Hide the old progress container */
         }
         
-        .progress-bar-container {
-            height: 6px;
-            background-color: #e5e7eb;
-            border-radius: 3px;
-            overflow: hidden;
+        /* Style for progress messages */
+        .progress-message {
+            opacity: 0.9;
         }
         
-        .progress-bar {
-            height: 100%;
-            background-color: var(--primary-color);
-            width: 0%;
-            transition: width 0.3s ease;
+        .progress-message .content {
+            background-color: #f0f9ff;
+            border-left: 3px solid var(--primary-color);
+            padding-left: 0.75rem;
         }
         
-        .progress-status {
-            font-size: 0.875rem;
-            color: var(--secondary-text-color);
+        .progress-message .content p {
+            margin: 0.25rem 0;
         }
         
-        .progress-steps {
-            margin-top: 0.5rem;
-            font-size: 0.875rem;
-            color: var(--secondary-text-color);
-            display: flex;
-            flex-direction: column;
-            gap: 0.25rem;
+        .progress-message .content strong {
+            color: var(--primary-color);
+            font-family: monospace;
+            font-size: 0.9rem;
         }
         
-        .progress-step {
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
+        /* Spinning cog animation */
+        .fa-spin {
+            animation: fa-spin 2s infinite linear;
         }
         
-        .step-indicator {
-            width: 18px;
-            height: 18px;
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-size: 0.75rem;
-            flex-shrink: 0;
-        }
-        
-        .step-pending {
-            background-color: #e5e7eb;
-            color: var(--secondary-text-color);
-        }
-        
-        .step-active {
-            background-color: #3b82f6;
-            color: white;
-        }
-        
-        .step-completed {
-            background-color: var(--primary-color);
-            color: white;
+        @keyframes fa-spin {
+            0% {
+                transform: rotate(0deg);
+            }
+            100% {
+                transform: rotate(360deg);
+            }
         }
         
         @media (max-width: 768px) {
@@ -471,20 +442,39 @@ def index():
             }
             
             // Function to add a bot message
-            function addBotMessage(message) {
-                const messageElement = document.createElement('div');
-                messageElement.className = 'message';
-                messageElement.innerHTML = `
-                    <div class="avatar bot-avatar">
-                        <i class="fas fa-robot"></i>
-                    </div>
-                    <div class="content">
-                        ${message}
-                    </div>
-                `;
-                messagesContainer.appendChild(messageElement);
+            function addBotMessage(content, isProgressMessage = false) {
+                // Create message element
+                const message = document.createElement('div');
+                message.className = 'message';
+                if (isProgressMessage) {
+                    message.className += ' progress-message';
+                }
+                
+                // Create avatar
+                const avatar = document.createElement('div');
+                avatar.className = 'avatar bot-avatar';
+                
+                // Use different icon for progress messages
+                if (isProgressMessage) {
+                    avatar.innerHTML = '<i class="fas fa-cog fa-spin"></i>';
+                } else {
+                    avatar.innerHTML = '<i class="fas fa-robot"></i>';
+                }
+                
+                // Create content
+                const contentElement = document.createElement('div');
+                contentElement.className = 'content';
+                contentElement.innerHTML = content;
+                
+                // Append avatar and content to message
+                message.appendChild(avatar);
+                message.appendChild(contentElement);
+                
+                // Append message to messages container
+                messagesContainer.appendChild(message);
+                
+                // Scroll to bottom
                 messagesContainer.scrollTop = messagesContainer.scrollHeight;
-                return messageElement;
             }
             
             // Function to add a typing indicator
@@ -795,60 +785,100 @@ def index():
                 }
             });
             
+            // Function to animate progress bar smoothly
+            async function animateProgress(from, to, duration = 500) {
+                const startTime = Date.now();
+                const animate = () => {
+                    const currentTime = Date.now();
+                    const elapsedTime = currentTime - startTime;
+                    const progress = Math.min(elapsedTime / duration, 1);
+                    const currentValue = from + (to - from) * progress;
+                    progressBar.style.width = `${currentValue}%`;
+                    
+                    if (progress < 1) {
+                        requestAnimationFrame(animate);
+                    }
+                };
+                animate();
+                
+                // Return a promise that resolves after the animation completes
+                return new Promise(resolve => setTimeout(resolve, duration));
+            }
+            
+            // Function to poll progress updates from the server and show as chatbot messages
+            async function pollProgressUpdates(progressId, lastStep = null, lastMessage = null) {
+                try {
+                    console.log('Polling for progress updates');
+                    const response = await fetch('/api/progress');
+                    if (!response.ok) {
+                        setTimeout(() => pollProgressUpdates(progressId, lastStep, lastMessage), 500);
+                        return;
+                    }
+                    
+                    const progressData = await response.json();
+                    console.log('Progress data received:', progressData);
+                    
+                    // If we have progress data with a step and message
+                    if (progressData && progressData.step && progressData.message) {
+                        // Only add a new message if the step or message has changed
+                        if (progressData.step !== lastStep || progressData.message !== lastMessage) {
+                            // Map step to agent name
+                            let agentName = '';
+                            switch(progressData.step) {
+                                case 'upload':
+                                    agentName = 'FileUploadAgent';
+                                    break;
+                                case 'analyze':
+                                    agentName = 'FileClassifierAgent';
+                                    break;
+                                case 'schema':
+                                    agentName = 'SchemaProcessorAgent';
+                                    break;
+                                case 'dictionary':
+                                    agentName = 'DictionarySynthesizerAgent';
+                                    break;
+                                case 'sample':
+                                    agentName = 'SampleDataGeneratorAgent';
+                                    break;
+                                case 'database':
+                                    agentName = 'DatabaseBuilderAgent';
+                                    break;
+                                default:
+                                    agentName = 'WorkflowOrchestratorAgent';
+                            }
+                            
+                            // Create a message showing which agent is active and what it's doing
+                            const statusMessage = `<p><strong>${agentName}</strong>: ${progressData.message}</p>`;
+                            addBotMessage(statusMessage, true); // true means this is a progress message
+                            
+                            // Update last step and message
+                            lastStep = progressData.step;
+                            lastMessage = progressData.message;
+                        }
+                        
+                        // Continue polling if not complete
+                        if (progressData.progress < 100 && progressData.status !== 'error') {
+                            setTimeout(() => pollProgressUpdates(progressId, lastStep, lastMessage), 500);
+                        }
+                    } else {
+                        // If no progress data yet, keep polling
+                        setTimeout(() => pollProgressUpdates(progressId, lastStep, lastMessage), 500);
+                    }
+                } catch (error) {
+                    console.error('Error polling progress:', error);
+                    // Continue polling even if there's an error
+                    setTimeout(() => pollProgressUpdates(progressId, lastStep, lastMessage), 500);
+                }
+            }
+            
             // Function to upload file with progress tracking
             async function uploadFile(file) {
                 try {
                     // Show typing indicator
                     addTypingIndicator();
                     
-                    // Show progress container
-                    const progressContainer = document.getElementById('progressContainer');
-                    const progressBar = document.getElementById('progressBar');
-                    const progressStatus = document.getElementById('progressStatus');
-                    const progressSteps = document.getElementById('progressSteps');
-                    
-                    progressContainer.style.display = 'flex';
-                    progressBar.style.width = '10%';
-                    progressStatus.textContent = 'Uploading file...';
-                    
-                    // Initialize progress steps
-                    const steps = [
-                        { id: 'upload', text: 'Uploading file', status: 'active' },
-                        { id: 'analyze', text: 'Analyzing file structure', status: 'pending' },
-                        { id: 'schema', text: 'Processing schema', status: 'pending' },
-                        { id: 'dictionary', text: 'Generating data dictionary', status: 'pending' },
-                        { id: 'sample', text: 'Creating sample data', status: 'pending' },
-                        { id: 'database', text: 'Setting up database', status: 'pending' }
-                    ];
-                    
-                    // Render initial steps
-                    renderProgressSteps();
-                    
-                    function renderProgressSteps() {
-                        progressSteps.innerHTML = '';
-                        steps.forEach((step, index) => {
-                            const stepElement = document.createElement('div');
-                            stepElement.className = 'progress-step';
-                            stepElement.innerHTML = `
-                                <div class="step-indicator step-${step.status}">${index + 1}</div>
-                                <div>${step.text}</div>
-                            `;
-                            progressSteps.appendChild(stepElement);
-                        });
-                    }
-                    
-                    function updateStep(stepId, status, progress) {
-                        const stepIndex = steps.findIndex(s => s.id === stepId);
-                        if (stepIndex >= 0) {
-                            steps[stepIndex].status = status;
-                            renderProgressSteps();
-                            
-                            // Update progress bar
-                            if (progress) {
-                                progressBar.style.width = `${progress}%`;
-                            }
-                        }
-                    }
+                    // Add initial message about file upload
+                    addBotMessage(`<p><strong>WorkflowOrchestratorAgent</strong>: Starting to process file: ${file.name}</p>`, true);
                     
                     // Create form data
                     const formData = new FormData();
@@ -865,27 +895,15 @@ def index():
                         throw new Error(`Server error: ${response.status} ${errorText}`);
                     }
                     
-                    updateStep('upload', 'completed', 30);
-                    updateStep('analyze', 'active', 40);
+                    // Start polling for progress updates immediately
+                    console.log('Starting progress polling');
+                    pollProgressUpdates(null, null, null);
                     
-                    // Process response
+                    // Wait for the response to be parsed
                     const result = await response.json();
                     
-                    // Update progress for remaining steps
-                    updateStep('analyze', 'completed', 60);
-                    
-                    if (result.is_schema_file) {
-                        updateStep('schema', 'completed', 70);
-                        updateStep('dictionary', 'completed', 80);
-                        updateStep('sample', 'completed', 90);
-                    }
-                    
-                    updateStep('database', 'completed', 100);
-                    
-                    // Hide progress after a short delay
-                    setTimeout(() => {
-                        progressContainer.style.display = 'none';
-                    }, 2000);
+                    // Add a final completion message
+                    addBotMessage(`<p><strong>WorkflowOrchestratorAgent</strong>: Processing complete! File has been successfully processed.</p>`, true);
                     
                     // Remove typing indicator
                     removeTypingIndicator();
