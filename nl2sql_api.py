@@ -75,6 +75,18 @@ def upload_file():
         
         # Process the file based on its type
         db_path = os.path.join('temp', f"{timestamp}_database.db")
+        is_schema_file = False
+        data_dict_path = file_path
+        
+        # Check if this is a schema file with multiple tables
+        if file_path.lower().endswith('.csv'):
+            df = pd.read_csv(file_path)
+            if all(col in df.columns for col in ['TABLE_NAME', 'COLUMN_NAME', 'DATA_TYPE']):
+                is_schema_file = True
+                # Generate data dictionary path for schema file
+                data_dict_path = os.path.splitext(file_path)[0] + "_dict.json"
+        
+        # Process the file
         process_file(file_path, db_path)
         
         # Return the analysis result and paths
@@ -82,7 +94,8 @@ def upload_file():
             'success': True,
             'message': 'File uploaded and processed successfully',
             'analysis': analysis_result,
-            'data_dict_path': file_path,
+            'is_schema_file': is_schema_file,
+            'data_dict_path': data_dict_path,
             'db_path': db_path
         }
         
@@ -832,6 +845,7 @@ def identify_potential_relationships(table_info):
 def process_schema_file(file_path, db_path, df):
     """
     Process a schema definition file and create tables with sample data.
+    Also generates a comprehensive data dictionary using LLM.
     
     Args:
         file_path: Path to the schema file
@@ -899,7 +913,164 @@ def process_schema_file(file_path, db_path, df):
     
     conn.commit()
     conn.close()
+    
+    # Generate data dictionary using LLM
+    data_dict = generate_data_dictionary_for_schema(tables)
+    
+    # Save data dictionary to file
+    data_dict_path = os.path.splitext(file_path)[0] + "_dict.json"
+    with open(data_dict_path, 'w') as f:
+        json.dump(data_dict, f, indent=2, cls=NpEncoder)
+    
     return True
+
+def generate_data_dictionary_for_schema(tables):
+    """
+    Generate a comprehensive data dictionary for schema tables using LLM.
+    
+    Args:
+        tables: Dictionary mapping table names to their column definitions
+    
+    Returns:
+        Data dictionary object
+    """
+    # Initialize the data dictionary
+    data_dict = {
+        "dataset_name": "multi_table_schema",
+        "description": "Schema with multiple related tables",
+        "tables": {}
+    }
+    
+    # Process each table
+    for table_name, columns in tables.items():
+        # Prepare column information for LLM
+        columns_info = ""
+        for col in columns:
+            columns_info += f"Column: {col['name']}, Type: {col['type']}\n"
+        
+        # Create prompt for GPT
+        prompt = f"""
+        I have a database table with the following structure:
+        
+        Table: {table_name}
+        {columns_info}
+        
+        Please analyze this table structure and provide:
+        1. A description of what this table likely represents
+        2. For each column, provide:
+           - A description of what the column represents
+           - Whether it's likely categorical
+           - Possible constraints
+           - Synonyms for the column name
+           - Potential relationships with other columns
+        
+        Format your response as YAML with the following structure:
+        ```yaml
+        table_description: Description of the table
+        columns:
+          column_name1:
+            description: What this column represents
+            categorical: true/false
+            constraints: Any constraints (e.g., "positive numbers only")
+            synonyms: [synonym1, synonym2]
+          column_name2:
+            ...
+        ```
+        """
+        
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4.1-nano",
+                messages=[
+                    {"role": "system", "content": "You are an AI assistant that specializes in database schema analysis. Respond in YAML format."},
+                    {"role": "user", "content": prompt}
+                ]
+            )
+            
+            # Get the response content and clean it
+            content = clean_yaml_response(response.choices[0].message.content)
+            
+            # Parse YAML response
+            table_dict = yaml.safe_load(content)
+            
+            # Add to data dictionary
+            data_dict["tables"][table_name] = table_dict
+            
+        except Exception as e:
+            print(f"Error generating data dictionary for table {table_name}: {str(e)}")
+            # Add basic information if LLM fails
+            data_dict["tables"][table_name] = {
+                "table_description": f"Table containing {table_name} data",
+                "columns": {col["name"]: {"description": f"{col['name']} of type {col['type']}"} for col in columns}
+            }
+    
+    # Add relationships between tables
+    data_dict["relationships"] = identify_relationships_for_dict(tables)
+    
+    return data_dict
+
+def identify_relationships_for_dict(tables):
+    """
+    Identify relationships between tables for the data dictionary.
+    
+    Args:
+        tables: Dictionary mapping table names to their column definitions
+    
+    Returns:
+        List of relationship dictionaries
+    """
+    relationships = []
+    
+    # Get all tables and their columns
+    table_names = list(tables.keys())
+    
+    # Look for common column names that might indicate relationships
+    for i in range(len(table_names)):
+        for j in range(i+1, len(table_names)):
+            table1 = table_names[i]
+            table2 = table_names[j]
+            columns1 = [col["name"] for col in tables[table1]]
+            columns2 = [col["name"] for col in tables[table2]]
+            
+            # Find common columns
+            common_columns = set(columns1).intersection(set(columns2))
+            
+            # Look for ID columns that might indicate relationships
+            for col in common_columns:
+                if col.lower().endswith('id') or col.lower() == 'id':
+                    relationships.append({
+                        "type": "join",
+                        "table1": table1,
+                        "table2": table2,
+                        "column": col,
+                        "description": f"{table1}.{col} may join with {table2}.{col}"
+                    })
+            
+            # Look for columns in table1 that might reference table2
+            for col in columns1:
+                # Check if column name contains the name of table2 (e.g., customer_id in orders table)
+                if table2.lower() in col.lower() and col.lower().endswith('id'):
+                    relationships.append({
+                        "type": "reference",
+                        "from_table": table1,
+                        "to_table": table2,
+                        "column": col,
+                        "description": f"{table1}.{col} may reference {table2}"
+                    })
+            
+            # Look for columns in table2 that might reference table1
+            for col in columns2:
+                # Check if column name contains the name of table1
+                if table1.lower() in col.lower() and col.lower().endswith('id'):
+                    relationships.append({
+                        "type": "reference",
+                        "from_table": table2,
+                        "to_table": table1,
+                        "column": col,
+                        "description": f"{table2}.{col} may reference {table1}"
+                    })
+    
+    return relationships
 
 def map_data_type_to_sqlite(data_type):
     """
