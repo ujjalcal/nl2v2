@@ -43,21 +43,16 @@ class NpEncoder(json.JSONEncoder):
 app = Flask(__name__)
 CORS(app)
 
-# Event queue for SSE
-event_queue = Queue()
-active_clients = set()
-queue_lock = threading.Lock()
+# Simple global events list for tracking agent activities
+global_events = []
 
 # Agent activity tracking
 current_file_id = None
 current_workflow_state = 'IDLE'
 
-# Store recent events for new clients
-recent_events = []
-
 def agent_activity(agent_name, workflow_state, message, details=None):
-    """Record real agent activity and emit event to connected clients."""
-    global current_workflow_state, current_file_id, recent_events
+    """Record real agent activity to the global events list."""
+    global current_workflow_state, current_file_id, global_events
     
     # Update current workflow state
     current_workflow_state = workflow_state
@@ -76,16 +71,10 @@ def agent_activity(agent_name, workflow_state, message, details=None):
     print(f"Agent activity: {agent_name} - [{workflow_state}] - {message}")
     app.logger.info(f"Agent activity: {agent_name} - [{workflow_state}] - {message}")
     
-    # Store this event in recent events (keep last 20 events)
-    recent_events.append(event_data)
-    if len(recent_events) > 20:
-        recent_events = recent_events[-20:]
-    
-    # Add to event queue for all active clients
-    with queue_lock:
-        # Add event to all active client queues
-        for client_queue in active_clients:
-            client_queue.put(event_data)
+    # Add to global events list (keep last 50 events)
+    global_events.append(event_data)
+    if len(global_events) > 50:
+        global_events = global_events[-50:]
     
     return event_data
 
@@ -100,40 +89,23 @@ def health_check():
     })
 
 @app.route('/api/events', methods=['GET'])
-def stream_events():
-    """Stream real-time agent activities using Server-Sent Events (SSE)."""
-    def event_stream():
-        # Create a queue for this client
-        client_queue = Queue()
-        
-        # Register this client
-        with queue_lock:
-            active_clients.add(client_queue)
-        
-        try:
-            # Send initial connection established event
-            yield f"data: {json.dumps({'event': 'connected', 'workflow_state': current_workflow_state})}\n\n"
-            
-            # Send all recent events to new client
-            for event in recent_events:
-                yield f"data: {json.dumps(event)}\n\n"
-            
-            while True:
-                # Wait for new events
-                try:
-                    event_data = client_queue.get(timeout=30)
-                    yield f"data: {json.dumps(event_data)}\n\n"
-                except Exception as e:
-                    # Send keepalive comment to prevent connection timeout
-                    yield ": keepalive\n\n"
-        finally:
-            # Unregister client when connection closes
-            with queue_lock:
-                active_clients.remove(client_queue)
+def get_events():
+    """Get all agent activities."""
+    global global_events
     
-    return Response(stream_with_context(event_stream()),
-                    content_type='text/event-stream',
-                    headers={'Cache-Control': 'no-cache', 'X-Accel-Buffering': 'no'})
+    # Get the timestamp parameter if provided
+    timestamp = request.args.get('since', 0, type=int)
+    
+    # Filter events by timestamp if provided
+    if timestamp > 0:
+        filtered_events = [event for event in global_events if event['timestamp'] > timestamp]
+    else:
+        filtered_events = global_events
+    
+    return jsonify({
+        'events': filtered_events,
+        'current_state': current_workflow_state
+    })
 
 @app.route('/api/upload', methods=['POST'])
 def upload_file():
@@ -143,8 +115,11 @@ def upload_file():
     """
     try:
         # Initialize a new file processing session
-        global current_file_id
+        global current_file_id, global_events
         current_file_id = str(uuid.uuid4())
+        
+        # Clear previous events
+        global_events = []
         
         # Check if file was uploaded
         if 'file' not in request.files:

@@ -815,54 +815,79 @@ def index():
                 return new Promise(resolve => setTimeout(resolve, duration));
             }
             
-            // Function to subscribe to real-time agent activities using Server-Sent Events (SSE)
-            function subscribeToAgentActivities() {
-                console.log('Subscribing to agent activities via SSE');
+            // Function to poll for agent activities
+            let lastTimestamp = 0;
+            let pollingInterval = null;
+            
+            function pollAgentActivities() {
+                console.log('Starting to poll for agent activities');
                 
-                // Create a new EventSource connection to the server
-                const eventSource = new EventSource('/api/events');
+                // Clear any existing polling interval
+                if (pollingInterval) {
+                    clearInterval(pollingInterval);
+                }
                 
-                // Set up event listeners
-                eventSource.onopen = (event) => {
-                    console.log('SSE connection established');
-                };
+                // Reset timestamp to get all events
+                lastTimestamp = 0;
                 
-                // Handle incoming agent activity events
-                eventSource.onmessage = (event) => {
+                // Define the polling function
+                async function fetchEvents() {
                     try {
-                        const eventData = JSON.parse(event.data);
-                        console.log('Agent activity received:', eventData);
-                        
-                        // Skip the initial connection event
-                        if (eventData.event === 'connected') {
-                            console.log('Connected to agent activity stream');
+                        console.log('Fetching agent events since:', lastTimestamp);
+                        // Use the local proxy endpoint which forwards to the API server
+                        const response = await fetch(`/api/events?since=${lastTimestamp}`);
+                        if (!response.ok) {
+                            console.error('Error fetching events:', response.status);
                             return;
                         }
                         
-                        // IMPORTANT: Always display every agent event that comes in
-                        console.log('Displaying agent event:', eventData.agent, eventData.workflow_state, eventData.message);
+                        const data = await response.json();
+                        console.log('Received events:', data.events.length);
                         
-                        // Create a message showing which agent is active, the workflow state, and what it's doing
-                        const statusMessage = `<p><strong>${eventData.agent}</strong> <span class="workflow-state">[${eventData.workflow_state}]</span>: ${eventData.message}</p>`;
-                        addBotMessage(statusMessage, true); // true means this is a progress message
-                        
-                        // If we're done, close the connection
-                        if (eventData.workflow_state === 'DONE' || eventData.workflow_state === 'ERROR') {
-                            console.log('Workflow complete, closing SSE connection');
-                            eventSource.close();
+                        // Process each event
+                        if (data.events && data.events.length > 0) {
+                            // Sort events by timestamp
+                            data.events.sort((a, b) => a.timestamp - b.timestamp);
+                            
+                            // Display each event
+                            data.events.forEach(eventData => {
+                                console.log('Displaying agent event:', eventData.agent, eventData.workflow_state, eventData.message);
+                                
+                                // Create a message showing which agent is active, the workflow state, and what it's doing
+                                const statusMessage = `<p><strong>${eventData.agent}</strong> <span class="workflow-state">[${eventData.workflow_state}]</span>: ${eventData.message}</p>`;
+                                addBotMessage(statusMessage, true); // true means this is a progress message
+                                
+                                // Update the last timestamp
+                                lastTimestamp = Math.max(lastTimestamp, eventData.timestamp);
+                            });
+                            
+                            // Check if we're done
+                            const lastEvent = data.events[data.events.length - 1];
+                            if (lastEvent.workflow_state === 'DONE' || lastEvent.workflow_state === 'ERROR') {
+                                console.log('Workflow complete, stopping polling');
+                                clearInterval(pollingInterval);
+                                pollingInterval = null;
+                            }
                         }
                     } catch (error) {
-                        console.error('Error processing agent activity:', error);
+                        console.error('Error polling agent activities:', error);
+                    }
+                }
+                
+                // Do an initial fetch
+                fetchEvents();
+                
+                // Set up polling interval (every 500ms)
+                pollingInterval = setInterval(fetchEvents, 500);
+                
+                return {
+                    stop: function() {
+                        if (pollingInterval) {
+                            clearInterval(pollingInterval);
+                            pollingInterval = null;
+                        }
                     }
                 };
-                
-                // Handle errors
-                eventSource.onerror = (error) => {
-                    console.error('SSE connection error:', error);
-                    eventSource.close();
-                };
-                
-                return eventSource;
             }
             
             // Function to upload file with progress tracking
@@ -871,11 +896,11 @@ def index():
                     // Show typing indicator
                     addTypingIndicator();
                     
-                    // Subscribe to real-time agent activities before uploading
-                    const eventSource = subscribeToAgentActivities();
-                    
                     // Add initial message about file upload
                     addBotMessage(`<p><strong>WorkflowOrchestratorAgent</strong> <span class="workflow-state">[INITIALIZING]</span>: Starting to process file: ${file.name}</p>`, true);
+                    
+                    // Start polling for agent activities
+                    const poller = pollAgentActivities();
                     
                     // Create form data
                     const formData = new FormData();
@@ -888,8 +913,8 @@ def index():
                     });
                     
                     if (!response.ok) {
-                        // Close the event source on error
-                        eventSource.close();
+                        // Stop polling on error
+                        poller.stop();
                         const errorText = await response.text();
                         throw new Error(`Server error: ${response.status} ${errorText}`);
                     }
@@ -897,8 +922,8 @@ def index():
                     // Wait for the response to be parsed
                     const result = await response.json();
                     
-                    // Note: We don't need to close the eventSource here as it will
-                    // automatically close when the workflow reaches DONE or ERROR state
+                    // Note: We don't need to stop the poller here as it will
+                    // automatically stop when the workflow reaches DONE or ERROR state
                     
                     // Remove typing indicator
                     removeTypingIndicator();
@@ -1137,6 +1162,27 @@ def proxy_clear_cache():
     try:
         # Forward the request to the API server
         response = requests.post('http://localhost:5000/api/clear_cache')
+        
+        # Return the API response
+        return response.content, response.status_code, {'Content-Type': 'application/json'}
+    except Exception as e:
+        return {
+            'error': f'Error forwarding request to API server: {str(e)}'
+        }, 500
+
+@app.route('/api/events', methods=['GET'])
+def proxy_events():
+    """
+    Proxy the events request to the API server.
+    """
+    import requests
+    
+    try:
+        # Get the since parameter if provided
+        since = request.args.get('since', '0')
+        
+        # Forward the request to the API server
+        response = requests.get(f'http://localhost:5000/api/events?since={since}')
         
         # Return the API response
         return response.content, response.status_code, {'Content-Type': 'application/json'}
