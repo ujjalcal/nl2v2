@@ -6,6 +6,7 @@ import numpy as np
 import yaml
 import xmltodict
 import shutil
+import re  # Ensure re is imported at the top level
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from dotenv import load_dotenv
@@ -86,8 +87,22 @@ def upload_file():
                 # Generate data dictionary path for schema file
                 data_dict_path = os.path.splitext(file_path)[0] + "_dict.json"
         
-        # Process the file
-        process_file(file_path, db_path)
+        # Process the file based on whether it's a schema file or not
+        if is_schema_file:
+            # For schema files, we need to create the data dictionary and tables
+            df = pd.read_csv(file_path)
+            process_schema_file(file_path, db_path, df)
+            
+            # Update the data_dict_path to point to the generated JSON file
+            data_dict_path = os.path.splitext(file_path)[0] + "_dict.json"
+            
+            # Make sure the file exists
+            if not os.path.exists(data_dict_path):
+                # If the file doesn't exist, fall back to the original file path
+                data_dict_path = file_path
+        else:
+            # For regular data files
+            process_file(file_path, db_path)
         
         # Return the analysis result and paths
         response = {
@@ -542,12 +557,8 @@ def process_file(file_path, db_path):
     """
     file_ext = os.path.splitext(file_path)[1].lower()
     
-    # Check if this is a schema file with multiple table definitions
-    if file_ext == '.csv':
-        df = pd.read_csv(file_path)
-        # Check if this is a schema definition file
-        if all(col in df.columns for col in ['TABLE_NAME', 'COLUMN_NAME', 'DATA_TYPE']):
-            return process_schema_file(file_path, db_path, df)
+    # Note: Schema file detection and processing is now handled in the upload_file function
+    # This function now only processes regular data files
     
     # If not a schema file, process as regular data file
     if file_ext == '.csv':
@@ -845,7 +856,8 @@ def identify_potential_relationships(table_info):
 def process_schema_file(file_path, db_path, df):
     """
     Process a schema definition file and create tables with sample data.
-    Also generates a comprehensive data dictionary using LLM.
+    Also generates a comprehensive data dictionary using LLM and uses it
+    to create realistic sample data.
     
     Args:
         file_path: Path to the schema file
@@ -855,9 +867,6 @@ def process_schema_file(file_path, db_path, df):
     Returns:
         True if successful
     """
-    # Create SQLite database
-    conn = sqlite3.connect(db_path)
-    
     # Group by table name
     tables = {}
     for _, row in df.iterrows():
@@ -876,7 +885,24 @@ def process_schema_file(file_path, db_path, df):
         
         tables[table_name].append(column_info)
     
-    # Create tables and generate sample data for each
+    # Generate data dictionary using LLM first
+    print(f"\n[DEBUG] Generating data dictionary for schema with {len(tables)} tables")
+    data_dict = generate_data_dictionary_for_schema(tables)
+    print(f"[DEBUG] Data dictionary generated with keys: {list(data_dict.keys())}")
+    if 'tables' in data_dict:
+        print(f"[DEBUG] Tables in data dictionary: {list(data_dict['tables'].keys())}")
+    
+    # Save data dictionary to file
+    data_dict_path = os.path.splitext(file_path)[0] + "_dict.json"
+    print(f"[DEBUG] Saving data dictionary to: {data_dict_path}")
+    with open(data_dict_path, 'w') as f:
+        json.dump(data_dict, f, indent=2, cls=NpEncoder)
+    print(f"[DEBUG] Data dictionary saved successfully")
+    
+    # Create SQLite database
+    conn = sqlite3.connect(db_path)
+    
+    # Create tables and generate sample data for each using the data dictionary
     for table_name, columns in tables.items():
         # Sort columns by ordinal position if available
         columns.sort(key=lambda x: x.get("ordinal_position", 0))
@@ -893,34 +919,42 @@ def process_schema_file(file_path, db_path, df):
         create_table_sql += ",\n".join(column_defs)
         create_table_sql += "\n);"
         
-        try:
-            conn.execute(create_table_sql)
-            
-            # Generate sample data (5 rows per table)
-            sample_data = generate_sample_data(columns, 5)
-            
-            # Insert sample data
-            if sample_data:
-                col_names = [col["name"] for col in columns]
-                placeholders = ", ".join(["?" for _ in col_names])
-                insert_sql = f"INSERT INTO {table_name} ({', '.join(col_names)}) VALUES ({placeholders})"
-                
-                for row in sample_data:
-                    conn.execute(insert_sql, row)
+        # Execute the CREATE TABLE statement without try-except to allow errors to propagate
+        conn.execute(create_table_sql)
         
-        except Exception as e:
-            print(f"Error creating table {table_name}: {str(e)}")
+        # Generate sample data using the data dictionary (5 rows per table)
+        print(f"\n[DEBUG] Generating sample data for table: {table_name}")
+        print(f"[DEBUG] Using data dictionary with keys: {list(data_dict.keys())}")
+        if 'tables' in data_dict and table_name in data_dict['tables']:
+            print(f"[DEBUG] Table info available in data dictionary")
+        else:
+            print(f"[DEBUG] WARNING: Table {table_name} not found in data dictionary tables: {list(data_dict.get('tables', {}).keys())}")
+        
+        # Generate sample data with NO FALLBACKS - let errors propagate
+        print(f"\n[DEBUG] Generating realistic sample data for table: {table_name}")
+        print(f"[DEBUG] Number of columns: {len(columns)}")
+        print(f"[DEBUG] Data dict keys: {list(data_dict.keys())}")
+        
+        # Show table description if available
+        if 'tables' in data_dict and table_name in data_dict['tables'] and 'table_description' in data_dict['tables'][table_name]:
+            print(f"[DEBUG] Found table in data dictionary. Table description: {data_dict['tables'][table_name]['table_description']}")
+        
+        # Call LLM for sample data generation - no try/except to allow errors to propagate
+        print(f"\n[DEBUG] Sending prompt to LLM for table {table_name}")
+        sample_data = generate_realistic_sample_data(table_name, columns, data_dict, 5)
+        
+        # Insert sample data
+        if sample_data:
+            print(f"[DEBUG] Successfully generated {len(sample_data)} rows of sample data")
+            col_names = [col["name"] for col in columns]
+            placeholders = ", ".join(["?" for _ in col_names])
+            insert_sql = f"INSERT INTO {table_name} ({', '.join(col_names)}) VALUES ({placeholders})"
+            
+            for row in sample_data:
+                conn.execute(insert_sql, row)
     
     conn.commit()
     conn.close()
-    
-    # Generate data dictionary using LLM
-    data_dict = generate_data_dictionary_for_schema(tables)
-    
-    # Save data dictionary to file
-    data_dict_path = os.path.splitext(file_path)[0] + "_dict.json"
-    with open(data_dict_path, 'w') as f:
-        json.dump(data_dict, f, indent=2, cls=NpEncoder)
     
     return True
 
@@ -990,18 +1024,59 @@ def generate_data_dictionary_for_schema(tables):
             # Get the response content and clean it
             content = clean_yaml_response(response.choices[0].message.content)
             
-            # Parse YAML response
-            table_dict = yaml.safe_load(content)
-            
-            # Add to data dictionary
-            data_dict["tables"][table_name] = table_dict
+            try:
+                # Parse YAML response
+                table_dict = yaml.safe_load(content)
+                
+                # Validate the structure
+                if not isinstance(table_dict, dict):
+                    raise ValueError("LLM response is not a valid dictionary")
+                
+                # Ensure required keys exist
+                if 'table_description' not in table_dict:
+                    table_dict['table_description'] = f"Table containing {table_name} data"
+                
+                if 'columns' not in table_dict or not isinstance(table_dict['columns'], dict):
+                    table_dict['columns'] = {}
+                
+                # Ensure all columns have entries
+                for col in columns:
+                    col_name = col["name"]
+                    if col_name not in table_dict['columns']:
+                        table_dict['columns'][col_name] = {
+                            "description": f"{col_name} of type {col['type']}",
+                            "categorical": col['type'].upper() in ['TEXT', 'VARCHAR', 'CHAR', 'STRING'],
+                            "constraints": "",
+                            "synonyms": [col_name.replace("_", " ")]
+                        }
+                
+                # Add to data dictionary
+                data_dict["tables"][table_name] = table_dict
+                
+            except Exception as yaml_error:
+                print(f"Error parsing YAML for table {table_name}: {str(yaml_error)}")
+                # Add basic information if YAML parsing fails
+                data_dict["tables"][table_name] = {
+                    "table_description": f"Table containing {table_name} data",
+                    "columns": {col["name"]: {
+                        "description": f"{col['name']} of type {col['type']}",
+                        "categorical": col['type'].upper() in ['TEXT', 'VARCHAR', 'CHAR', 'STRING'],
+                        "constraints": "",
+                        "synonyms": [col["name"].replace("_", " ")]
+                    } for col in columns}
+                }
             
         except Exception as e:
             print(f"Error generating data dictionary for table {table_name}: {str(e)}")
             # Add basic information if LLM fails
             data_dict["tables"][table_name] = {
                 "table_description": f"Table containing {table_name} data",
-                "columns": {col["name"]: {"description": f"{col['name']} of type {col['type']}"} for col in columns}
+                "columns": {col["name"]: {
+                    "description": f"{col['name']} of type {col['type']}",
+                    "categorical": col['type'].upper() in ['TEXT', 'VARCHAR', 'CHAR', 'STRING'],
+                    "constraints": "",
+                    "synonyms": [col["name"].replace("_", " ")]
+                } for col in columns}
             }
     
     # Add relationships between tables
@@ -1099,47 +1174,205 @@ def map_data_type_to_sqlite(data_type):
     else:
         return 'TEXT'  # Default to TEXT for unknown types
 
-def generate_sample_data(columns, num_rows=5):
+def generate_realistic_sample_data(table_name, columns, data_dict, num_rows=5):
     """
-    Generate sample data for a table based on column definitions.
+    Generate realistic sample data for a table based on the data dictionary using LLM.
+    No fallback mechanisms - will raise errors if LLM generation fails.
     
     Args:
+        table_name: Name of the table
         columns: List of column definitions
+        data_dict: Data dictionary with table and column information
         num_rows: Number of sample rows to generate
     
     Returns:
         List of sample data rows
     """
-    sample_data = []
+    # Prepare table description
+    table_description = f"Table containing {table_name} data"
+    if 'tables' in data_dict and table_name in data_dict['tables']:
+        table_dict = data_dict['tables'][table_name]
+        if 'table_description' in table_dict:
+            table_description = table_dict['table_description']
     
-    for i in range(num_rows):
-        row = []
-        for col in columns:
-            col_type = col["type"].upper()
-            col_name = col["name"]
-            
-            # Generate appropriate sample data based on type
-            if col_type in ['TEXT', 'VARCHAR', 'CHAR', 'STRING']:
-                # Use column name as basis for sample text
-                sample_value = f"{col_name}_sample_{i+1}"
-            elif col_type in ['NUMBER', 'INT', 'INTEGER', 'BIGINT', 'SMALLINT']:
-                sample_value = i + 1000  # Start from 1000
-            elif col_type in ['FLOAT', 'DOUBLE', 'DECIMAL', 'REAL']:
-                sample_value = (i + 1) * 10.5
-            elif col_type in ['DATE']:
-                sample_value = f"2025-{(i % 12) + 1:02d}-{(i % 28) + 1:02d}"
-            elif col_type in ['DATETIME', 'TIMESTAMP']:
-                sample_value = f"2025-{(i % 12) + 1:02d}-{(i % 28) + 1:02d} {i % 24:02d}:{i % 60:02d}:00"
-            elif col_type in ['BOOLEAN', 'BOOL']:
-                sample_value = i % 2  # Alternate between 0 and 1
-            else:
-                sample_value = f"Sample_{col_name}_{i+1}"
-                
-            row.append(sample_value)
+    # Prepare column information
+    columns_info = []
+    for col in columns:
+        col_name = col["name"]
+        col_type = col["type"]
         
-        sample_data.append(row)
+        # Get column description if available
+        description = f"{col_name} of type {col_type}"
+        categorical = col_type.upper() in ['TEXT', 'VARCHAR', 'CHAR', 'STRING']
+        constraints = ""
+        synonyms = [col_name.replace("_", " ")]
+        
+        if 'tables' in data_dict and table_name in data_dict['tables']:
+            table_dict = data_dict['tables'][table_name]
+            if 'columns' in table_dict and col_name in table_dict['columns']:
+                col_info = table_dict['columns'][col_name]
+                if 'description' in col_info:
+                    description = col_info['description']
+                if 'constraints' in col_info:
+                    constraints = col_info['constraints']
+                if 'categorical' in col_info:
+                    categorical = col_info['categorical']
+                if 'synonyms' in col_info and col_info['synonyms']:
+                    synonyms = col_info['synonyms']
+        
+        columns_info.append({
+            "name": col_name,
+            "type": col_type,
+            "description": description,
+            "categorical": categorical,
+            "constraints": constraints,
+            "synonyms": synonyms
+        })
     
+    # Format column info for the prompt
+    columns_text = ""
+    for col_info in columns_info:
+        columns_text += f"Column: {col_info['name']}, Type: {col_info['type']}\n"
+        columns_text += f"Description: {col_info['description']}\n"
+        if col_info['constraints']:
+            columns_text += f"Constraints: {col_info['constraints']}\n"
+        columns_text += f"Categorical: {col_info['categorical']}\n\n"
+    
+    # Create a list of column names for reference
+    column_names = [col['name'] for col in columns]
+    column_types = [col['type'] for col in columns]
+    
+    # Create prompt for GPT with detailed instructions
+    prompt = f"""
+    Generate {num_rows} rows of REALISTIC sample data for a database table with the following structure:
+    
+    Table: {table_name}
+    Description: {table_description}
+    CRITICAL: This table has EXACTLY {len(columns)} columns - no more, no less.
+    
+    Columns (in exact order):
+    {columns_text}
+    
+    Your response MUST be a valid JSON array of arrays, where each inner array represents one row of data.
+    CRITICAL REQUIREMENT: Each row MUST have EXACTLY {len(columns)} values in the EXACT order of columns listed above.
+    
+    Here is the exact list of {len(columns)} column names in order:
+    {column_names}
+    
+    And their corresponding types:
+    {column_types}
+    
+    Example format for this table with {len(columns)} columns:
+    [
+      [value1_for_col1, value2_for_col2, ..., value{len(columns)}_for_col{len(columns)}],
+      [value1_for_col1, value2_for_col2, ..., value{len(columns)}_for_col{len(columns)}],
+      ...
+    ]
+    
+    IMPORTANT GUIDELINES:
+    1. COUNT THE VALUES IN EACH ROW. Every row MUST have EXACTLY {len(columns)} values.
+    2. Generate REALISTIC values that match the column descriptions and constraints
+    3. For dates, use YYYY-MM-DD format (e.g., 2025-05-28)
+    4. For timestamps, use YYYY-MM-DD HH:MM:SS format (e.g., 2025-05-28 14:30:00)
+    5. For numeric columns, provide appropriate numeric values (not strings)
+    6. For text columns, generate meaningful text based on the column name and description
+    7. Ensure data is consistent across rows (e.g., related columns should have related values)
+    8. DO NOT include any explanations or markdown formatting - ONLY the JSON array
+    9. VERIFY that each row has EXACTLY {len(columns)} elements before returning
+    10. DO NOT add extra columns that aren't in the list above
+    """
+    
+    # Call the LLM with a strong instruction to return only JSON
+    response = client.chat.completions.create(
+        model="gpt-4.1-nano",
+        messages=[
+            {"role": "system", "content": "You are a data generation system that ONLY outputs valid JSON arrays. Do not include any explanations, just the JSON array."},
+            {"role": "user", "content": prompt}
+        ],
+        temperature=0.7  # Add some randomness for realistic data
+    )
+    
+    # Get the response content
+    content = response.choices[0].message.content.strip()
+    print(f"Raw LLM response for {table_name}: {content[:100]}...")
+    
+    # Clean up the response to extract just the JSON array
+    # Remove any markdown code block markers
+    content = re.sub(r'^```(?:json)?\s*', '', content)
+    content = re.sub(r'\s*```$', '', content)
+    
+    # Ensure the content is a valid JSON array
+    if not (content.startswith('[') and content.endswith(']')):
+        # If not a complete JSON array, try to extract it
+        json_match = re.search(r'(\[\s*\[.*?\]\s*\])', content, re.DOTALL)
+        if json_match:
+            content = json_match.group(1)
+        else:
+            # Try another pattern that might capture the JSON array
+            json_match = re.search(r'(\[\s*\[.*)', content, re.DOTALL)
+            if json_match:
+                # Try to balance the brackets
+                partial_content = json_match.group(1)
+                open_brackets = partial_content.count('[')
+                close_brackets = partial_content.count(']')
+                # Add missing closing brackets if needed
+                if open_brackets > close_brackets:
+                    partial_content += ']' * (open_brackets - close_brackets)
+                    content = partial_content
+                else:
+                    raise ValueError(f"LLM response is not a valid JSON array: {content[:100]}...")
+            else:
+                raise ValueError(f"LLM response is not a valid JSON array: {content[:100]}...")
+    
+    try:
+        # Parse the JSON
+        sample_data = json.loads(content)
+    except json.JSONDecodeError as e:
+        print(f"JSON decode error: {str(e)}")
+        print(f"Problematic content: {content[:200]}...")
+        raise ValueError(f"Failed to parse JSON: {str(e)}")
+    
+    # Validate the sample data structure
+    if not isinstance(sample_data, list):
+        raise ValueError(f"Response is not a list. Got {type(sample_data).__name__} instead.")
+    
+    if len(sample_data) == 0:
+        raise ValueError("Sample data is empty. No rows were generated.")
+    
+    # Check if all rows are lists
+    non_list_rows = [i for i, row in enumerate(sample_data) if not isinstance(row, list)]
+    if non_list_rows:
+        raise ValueError(f"Rows at indices {non_list_rows} are not lists. Got {[type(sample_data[i]).__name__ for i in non_list_rows]}")
+    
+    # Check if all rows have the correct number of columns
+    wrong_length_rows = [i for i, row in enumerate(sample_data) if len(row) != len(columns)]
+    if wrong_length_rows:
+        print(f"Warning: Rows at indices {wrong_length_rows} don't have {len(columns)} columns. Got {[len(sample_data[i]) for i in wrong_length_rows]}")
+        print("Fixing row lengths...")
+        
+        # Fix the rows with wrong lengths
+        for i in wrong_length_rows:
+            row = sample_data[i]
+            if len(row) > len(columns):
+                # Truncate extra columns
+                print(f"Truncating row {i} from {len(row)} to {len(columns)} columns")
+                sample_data[i] = row[:len(columns)]
+            elif len(row) < len(columns):
+                # Pad with null values for missing columns
+                print(f"Row {i} is too short ({len(row)} columns). This is a critical error.")
+                raise ValueError(f"Row {i} has too few columns: {len(row)} instead of {len(columns)}")
+    
+    # Final validation
+    if not all(len(row) == len(columns) for row in sample_data):
+        # This should never happen after fixing
+        raise ValueError(f"Failed to fix all rows to have exactly {len(columns)} columns")
+    
+    print(f"Successfully validated sample data: {len(sample_data)} rows, each with {len(columns)} columns")
+    
+    # Return the valid sample data
     return sample_data
+
+# No more fallback functions - we only use LLM for data generation
 
 if __name__ == '__main__':
     app.run(debug=True)
