@@ -161,13 +161,17 @@ def process_query():
                 records = df.to_dict('records')
                 columns = df.columns.tolist()
                 
+                # Generate a summary of the results using the summarizer agent
+                summary = generate_result_summary(query, sql_result['sql'], records, columns)
+                
                 response = {
                     'success': True,
                     'query': query,
                     'sql': sql_result['sql'],
                     'reasoning': sql_result.get('reasoning', ''),
                     'columns': columns,
-                    'data': records
+                    'data': records,
+                    'summary': summary
                 }
             except Exception as e:
                 response = {
@@ -312,6 +316,84 @@ def clean_sql_query(sql_query):
                 cleaned_sql = 'WITH ' + original_parts[1]
         
     return cleaned_sql
+
+
+def generate_result_summary(query, sql, records, columns):
+    """
+    Generate a natural language summary of SQL query results using GPT-4.1-nano.
+    
+    Args:
+        query: The original natural language query
+        sql: The SQL query that was executed
+        records: The query results as a list of dictionaries
+        columns: The column names from the results
+        
+    Returns:
+        A natural language summary of the results
+    """
+    # If no results, return a simple message
+    if not records:
+        return "No results were found for your query."
+    
+    # Prepare a sample of the results for the LLM
+    result_sample = records[:5]  # Take up to 5 records to avoid token limits
+    total_records = len(records)
+    
+    # Calculate some basic statistics if there are numeric columns
+    stats = {}
+    for col in columns:
+        # Check if this column has numeric values
+        numeric_values = []
+        for record in records:
+            value = record.get(col)
+            if isinstance(value, (int, float)) and value is not None:
+                numeric_values.append(value)
+        
+        if numeric_values:
+            stats[col] = {
+                'min': min(numeric_values),
+                'max': max(numeric_values),
+                'avg': sum(numeric_values) / len(numeric_values),
+                'count': len(numeric_values)
+            }
+    
+    # Create prompt for GPT
+    prompt = f"""
+    I need you to summarize the results of a database query in a clear, concise way.
+    
+    Original question: "{query}"
+    
+    SQL query used: "{sql}"
+    
+    The query returned {total_records} results with these columns: {', '.join(columns)}
+    
+    Here's a sample of the results:
+    {json.dumps(result_sample, indent=2)}
+    
+    Statistics for numeric columns:
+    {json.dumps(stats, indent=2)}
+    
+    Please provide a concise, natural language summary of these results that directly answers the original question.
+    Focus on key insights, patterns, or notable findings. Keep your response under 3-4 sentences.
+    """
+    
+    try:
+        # Query GPT-4.1-nano for the summary
+        response = client.chat.completions.create(
+            model="gpt-4.1-nano",
+            messages=[
+                {"role": "system", "content": "You are an AI assistant that specializes in summarizing database query results in clear, concise language."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=150
+        )
+        
+        # Return the summary
+        return response.choices[0].message.content.strip()
+    except Exception as e:
+        # If there's an error, return a basic summary
+        print(f"Error generating summary: {str(e)}")
+        return f"Query returned {total_records} results with columns: {', '.join(columns)}."
 
 # Analysis Functions
 def analyze_file_with_llm(file_path):

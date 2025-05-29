@@ -731,6 +731,16 @@ def index():
                         // Build response HTML
                         let responseHtml = '';
                         
+                        // Add summary if available
+                        if (result.summary) {
+                            responseHtml += `
+                                <div style="margin-top: 0.5rem; padding: 0.75rem; background-color: rgba(16, 163, 127, 0.1); border-radius: 0.375rem; border-left: 3px solid var(--primary-color);">
+                                    <p><strong><i class="fas fa-lightbulb"></i> Summary:</strong></p>
+                                    <p>${result.summary}</p>
+                                </div>
+                            `;
+                        }
+                        
                         // Add reasoning if available
                         if (result.reasoning) {
                             responseHtml += `
