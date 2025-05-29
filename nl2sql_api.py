@@ -400,15 +400,29 @@ def analyze_file_with_llm(file_path):
     """
     Analyze the file content using GPT-4.1 Nano to determine if it contains
     schema or actual data, and return a structured analysis response.
+    Handles schema files with multiple table definitions.
     """
     # Read the first few lines of the file to analyze
     file_ext = os.path.splitext(file_path)[1].lower()
     sample_content = ""
+    is_schema_file = False
+    tables_info = {}
     
     try:
         if file_ext == '.csv':
-            df = pd.read_csv(file_path, nrows=5)
-            sample_content = df.to_csv(index=False)
+            df = pd.read_csv(file_path)
+            # Check if this is a schema definition file with multiple tables
+            if all(col in df.columns for col in ['TABLE_NAME', 'COLUMN_NAME', 'DATA_TYPE']):
+                is_schema_file = True
+                # Group by table name to get table structure
+                for table_name, group in df.groupby('TABLE_NAME'):
+                    tables_info[table_name] = {
+                        'columns': group['COLUMN_NAME'].tolist(),
+                        'data_types': dict(zip(group['COLUMN_NAME'], group['DATA_TYPE']))
+                    }
+                sample_content = df.head(20).to_csv(index=False)
+            else:
+                sample_content = df.head(5).to_csv(index=False)
         elif file_ext == '.json':
             with open(file_path, 'r') as f:
                 data = json.load(f)
@@ -433,7 +447,34 @@ def analyze_file_with_llm(file_path):
             'error': f'Error reading file: {str(e)}'
         }
     
-    # Prepare the prompt for GPT
+    # If it's a schema file with multiple tables, create a custom analysis
+    if is_schema_file and tables_info:
+        tables_summary = []
+        for table_name, info in tables_info.items():
+            tables_summary.append({
+                'name': table_name,
+                'columns_count': len(info['columns']),
+                'columns': info['columns'][:5] + ['...'] if len(info['columns']) > 5 else info['columns']
+            })
+        
+        # Create sample questions based on the tables
+        sample_questions = [
+            f"What is the total count of records in {tables_summary[0]['name']}?",
+            f"What are the unique values of {tables_summary[0]['columns'][0]} in {tables_summary[0]['name']}?"
+        ]
+        
+        # If we have multiple tables, add a join question
+        if len(tables_summary) > 1:
+            sample_questions.append(f"What is the relationship between {tables_summary[0]['name']} and {tables_summary[1]['name']}?")
+        
+        return {
+            'file_type': 'schema',
+            'description': f'Schema definition file containing {len(tables_info)} tables',
+            'tables': tables_summary,
+            'sample_questions': sample_questions
+        }
+    
+    # For non-schema files or if schema detection failed, use GPT to analyze
     prompt = f"""
     I have a data file with the following content (showing first few lines/records):
     
@@ -484,10 +525,18 @@ def process_file(file_path, db_path):
     """
     Process the uploaded file and create a SQLite database.
     Supports CSV, JSON, XML, YAML, and Excel files.
+    Also handles schema files with multiple table definitions.
     """
     file_ext = os.path.splitext(file_path)[1].lower()
     
-    # Read the file into a pandas DataFrame
+    # Check if this is a schema file with multiple table definitions
+    if file_ext == '.csv':
+        df = pd.read_csv(file_path)
+        # Check if this is a schema definition file
+        if all(col in df.columns for col in ['TABLE_NAME', 'COLUMN_NAME', 'DATA_TYPE']):
+            return process_schema_file(file_path, db_path, df)
+    
+    # If not a schema file, process as regular data file
     if file_ext == '.csv':
         df = pd.read_csv(file_path)
     elif file_ext == '.json':
@@ -601,15 +650,56 @@ def convert_to_sql(query, table_info, data_dict_path):
     """
     Convert a natural language query to SQL using GPT-4.1 Nano.
     Returns a dictionary with the SQL query and reasoning.
+    Handles multiple tables and relationships between them.
     """
     # Read a sample of the data to provide context
     file_ext = os.path.splitext(data_dict_path)[1].lower()
     sample_content = ""
+    is_schema_file = False
+    tables_data = {}
     
     try:
+        # Check if this is a schema file with multiple tables
         if file_ext == '.csv':
-            df = pd.read_csv(data_dict_path, nrows=5)
-            sample_content = df.to_csv(index=False)
+            df = pd.read_csv(data_dict_path)
+            if all(col in df.columns for col in ['TABLE_NAME', 'COLUMN_NAME', 'DATA_TYPE']):
+                is_schema_file = True
+                # Extract db_path from data_dict_path (assuming they're in the same directory)
+                db_dir = os.path.dirname(data_dict_path)
+                db_name = os.path.basename(data_dict_path).split('.')[0]
+                if '_' in db_name and db_name.split('_')[0].isdigit():
+                    timestamp = db_name.split('_')[0]
+                    db_path = os.path.join(db_dir, f"{timestamp}_database.db")
+                else:
+                    db_path = os.path.join(db_dir, "database.db")
+                
+                # Get sample data for each table from the database
+                conn = sqlite3.connect(db_path)
+                cursor = conn.cursor()
+                
+                for table_name in table_info.keys():
+                    try:
+                        cursor.execute(f"SELECT * FROM {table_name} LIMIT 3;")
+                        columns = [description[0] for description in cursor.description]
+                        rows = cursor.fetchall()
+                        
+                        # Format as CSV-like string
+                        table_sample = ",".join(columns) + "\n"
+                        for row in rows:
+                            table_sample += ",".join([str(val) for val in row]) + "\n"
+                        
+                        tables_data[table_name] = table_sample
+                    except Exception as e:
+                        print(f"Error getting sample data for table {table_name}: {str(e)}")
+                
+                conn.close()
+                
+                # Use the schema file as sample content if we couldn't get data
+                if not tables_data:
+                    sample_content = df.head(10).to_csv(index=False)
+            else:
+                df = pd.read_csv(data_dict_path, nrows=5)
+                sample_content = df.to_csv(index=False)
         elif file_ext == '.json':
             with open(data_dict_path, 'r') as f:
                 data = json.load(f)
@@ -640,15 +730,27 @@ def convert_to_sql(query, table_info, data_dict_path):
             clean_table_name = '_'.join(clean_table_name.split('_')[1:])
             
         tables_str += f"Table: {clean_table_name}\n"
-        tables_str += f"Columns: {', '.join(columns)}\n\n"
+        tables_str += f"Columns: {', '.join(columns)}\n"
+        
+        # Add sample data for this table if available
+        if table_name in tables_data:
+            tables_str += f"Sample data:\n{tables_data[table_name]}\n"
+        
+        tables_str += "\n"
+    
+    # Add potential relationships between tables
+    if len(table_info) > 1:
+        relationships_str = identify_potential_relationships(table_info)
+        if relationships_str:
+            tables_str += f"Potential relationships between tables:\n{relationships_str}\n"
     
     prompt = f"""
     I have a SQLite database with the following structure:
     
     {tables_str}
     
-    Here's a sample of the data:
-    {sample_content}
+    {'Here\'s a sample of the data:' if not is_schema_file else ''}
+    {sample_content if not is_schema_file else ''}
     
     Convert the following natural language query to SQL:
     "{query}"
@@ -681,6 +783,192 @@ def convert_to_sql(query, table_info, data_dict_path):
         return {
             'error': f'Error converting query to SQL: {str(e)}'
         }
+
+def identify_potential_relationships(table_info):
+    """
+    Identify potential relationships between tables based on column names.
+    
+    Args:
+        table_info: Dictionary mapping table names to their columns
+    
+    Returns:
+        String describing potential relationships
+    """
+    relationships = []
+    
+    # Get all tables and their columns
+    tables = list(table_info.keys())
+    
+    # Look for common column names that might indicate relationships
+    for i in range(len(tables)):
+        for j in range(i+1, len(tables)):
+            table1 = tables[i]
+            table2 = tables[j]
+            columns1 = table_info[table1]
+            columns2 = table_info[table2]
+            
+            # Find common columns
+            common_columns = set(columns1).intersection(set(columns2))
+            
+            # Look for ID columns that might indicate relationships
+            for col in common_columns:
+                if col.lower().endswith('id') or col.lower() == 'id':
+                    relationships.append(f"{table1}.{col} may join with {table2}.{col}")
+            
+            # Look for columns in table1 that might reference table2
+            for col in columns1:
+                # Check if column name contains the name of table2 (e.g., customer_id in orders table)
+                if table2.lower() in col.lower() and col.lower().endswith('id'):
+                    relationships.append(f"{table1}.{col} may reference {table2}")
+            
+            # Look for columns in table2 that might reference table1
+            for col in columns2:
+                # Check if column name contains the name of table1
+                if table1.lower() in col.lower() and col.lower().endswith('id'):
+                    relationships.append(f"{table2}.{col} may reference {table1}")
+    
+    return "\n".join(relationships) if relationships else ""
+
+def process_schema_file(file_path, db_path, df):
+    """
+    Process a schema definition file and create tables with sample data.
+    
+    Args:
+        file_path: Path to the schema file
+        db_path: Path to the SQLite database to create
+        df: DataFrame containing the schema definition
+    
+    Returns:
+        True if successful
+    """
+    # Create SQLite database
+    conn = sqlite3.connect(db_path)
+    
+    # Group by table name
+    tables = {}
+    for _, row in df.iterrows():
+        table_name = row['TABLE_NAME']
+        column_name = row['COLUMN_NAME']
+        data_type = row['DATA_TYPE']
+        
+        if table_name not in tables:
+            tables[table_name] = []
+        
+        column_info = {
+            "name": column_name,
+            "type": data_type,
+            "ordinal_position": row.get('ORDINAL_POSITION', 0)
+        }
+        
+        tables[table_name].append(column_info)
+    
+    # Create tables and generate sample data for each
+    for table_name, columns in tables.items():
+        # Sort columns by ordinal position if available
+        columns.sort(key=lambda x: x.get("ordinal_position", 0))
+        
+        # Create table
+        create_table_sql = f"CREATE TABLE IF NOT EXISTS {table_name} (\n"
+        column_defs = []
+        
+        for col in columns:
+            col_name = col["name"]
+            col_type = map_data_type_to_sqlite(col["type"])
+            column_defs.append(f"    {col_name} {col_type}")
+        
+        create_table_sql += ",\n".join(column_defs)
+        create_table_sql += "\n);"
+        
+        try:
+            conn.execute(create_table_sql)
+            
+            # Generate sample data (5 rows per table)
+            sample_data = generate_sample_data(columns, 5)
+            
+            # Insert sample data
+            if sample_data:
+                col_names = [col["name"] for col in columns]
+                placeholders = ", ".join(["?" for _ in col_names])
+                insert_sql = f"INSERT INTO {table_name} ({', '.join(col_names)}) VALUES ({placeholders})"
+                
+                for row in sample_data:
+                    conn.execute(insert_sql, row)
+        
+        except Exception as e:
+            print(f"Error creating table {table_name}: {str(e)}")
+    
+    conn.commit()
+    conn.close()
+    return True
+
+def map_data_type_to_sqlite(data_type):
+    """
+    Map data types from schema to SQLite data types.
+    
+    Args:
+        data_type: Original data type from schema
+    
+    Returns:
+        SQLite data type
+    """
+    data_type = data_type.upper()
+    
+    if data_type in ['TEXT', 'VARCHAR', 'CHAR', 'STRING']:
+        return 'TEXT'
+    elif data_type in ['NUMBER', 'INT', 'INTEGER', 'BIGINT', 'SMALLINT']:
+        return 'INTEGER'
+    elif data_type in ['FLOAT', 'DOUBLE', 'DECIMAL', 'REAL']:
+        return 'REAL'
+    elif data_type in ['DATE', 'DATETIME', 'TIMESTAMP']:
+        return 'TEXT'
+    elif data_type in ['BOOLEAN', 'BOOL']:
+        return 'INTEGER'
+    elif data_type in ['BLOB', 'BINARY']:
+        return 'BLOB'
+    else:
+        return 'TEXT'  # Default to TEXT for unknown types
+
+def generate_sample_data(columns, num_rows=5):
+    """
+    Generate sample data for a table based on column definitions.
+    
+    Args:
+        columns: List of column definitions
+        num_rows: Number of sample rows to generate
+    
+    Returns:
+        List of sample data rows
+    """
+    sample_data = []
+    
+    for i in range(num_rows):
+        row = []
+        for col in columns:
+            col_type = col["type"].upper()
+            col_name = col["name"]
+            
+            # Generate appropriate sample data based on type
+            if col_type in ['TEXT', 'VARCHAR', 'CHAR', 'STRING']:
+                # Use column name as basis for sample text
+                sample_value = f"{col_name}_sample_{i+1}"
+            elif col_type in ['NUMBER', 'INT', 'INTEGER', 'BIGINT', 'SMALLINT']:
+                sample_value = i + 1000  # Start from 1000
+            elif col_type in ['FLOAT', 'DOUBLE', 'DECIMAL', 'REAL']:
+                sample_value = (i + 1) * 10.5
+            elif col_type in ['DATE']:
+                sample_value = f"2025-{(i % 12) + 1:02d}-{(i % 28) + 1:02d}"
+            elif col_type in ['DATETIME', 'TIMESTAMP']:
+                sample_value = f"2025-{(i % 12) + 1:02d}-{(i % 28) + 1:02d} {i % 24:02d}:{i % 60:02d}:00"
+            elif col_type in ['BOOLEAN', 'BOOL']:
+                sample_value = i % 2  # Alternate between 0 and 1
+            else:
+                sample_value = f"Sample_{col_name}_{i+1}"
+                
+            row.append(sample_value)
+        
+        sample_data.append(row)
+    
+    return sample_data
 
 if __name__ == '__main__':
     app.run(debug=True)
