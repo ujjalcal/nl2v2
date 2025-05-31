@@ -14,13 +14,102 @@ A minimalist, agentic AI application that converts natural language queries to S
 
 ## Architecture
 
-The application uses a clean separation between frontend and backend:
+Based on my analysis of the codebase and the user's requirements, here's a comprehensive bullet list for the NL2SQL Agentic Architecture with a focus on LLM-driven decision making:
 
-- **Frontend (minimalist_ui.py)**: Minimalist HTML/CSS/JS chat interface with file upload capabilities
-- **Backend (nl2sql_api.py)**: Flask API providing endpoints for message processing, file uploads, and data access
-- **Launcher (nl2sql_app.py)**: Starts both the UI and API servers and opens the browser
-
-This separation allows the UI to remain stable while the backend can be enhanced independently. The UI communicates with the API via HTTP requests, making it easy to modify either component without affecting the other.
+NL2SQL Agentic Architecture: LLM-Driven Approach
+Core Philosophy
+LLM as the Brain: All decision logic dynamically handled by GPT-4.1 nano
+Zero Hardcoded Rules: No predefined decision trees or fixed workflows
+Emergent Intelligence: System develops its own patterns and strategies
+Minimal Scaffolding: Just enough Python to invoke LLM and handle results
+Data Processor Pipeline
+FileClassifierAgent
+Identifies file type, structure, and content purpose
+Determines if file contains schema or actual data
+Makes format-specific parsing decisions dynamically
+DataProfilerAgent
+Analyzes data patterns, types, and statistics
+Identifies anomalies and quality issues
+Suggests data cleaning approaches based on content
+DictionarySynthesizerAgent
+Creates schema/dictionary from profiled data
+Infers relationships between tables
+Generates comprehensive column descriptions
+DatabaseSetupAgent
+Creates and configures the database
+Determines optimal table structures
+Handles schema evolution for changing data
+BulkLoaderAgent
+Loads data into the database
+Handles format-specific loading challenges
+Validates data integrity during loading
+Query Processor Pipeline
+ConversationalAgent
+Manages multi-turn conversations
+Determines when follow-up questions are needed
+Maintains conversation context without predefined flows
+QueryNormalizerAgent
+Standardizes and cleans queries
+Resolves ambiguities in natural language
+Expands abbreviations and domain-specific terms
+QueryDecomposerAgent
+Breaks down complex queries into sub-queries
+Identifies query components that can be parallelized
+Determines dependencies between sub-queries
+ExecutionPlannerAgent
+Creates execution plans for hybrid SQL/Python processing
+Builds directed acyclic graphs (DAGs) of execution steps
+Dynamically decides optimal execution approach for each component
+SQLGeneratorAgent
+Translates natural language to SQL
+Handles complex joins and nested queries
+Optimizes SQL for performance
+SQLExecutorAgent
+Executes SQL queries against the database
+Handles error recovery and query optimization
+Formats results for presentation
+CodeGeneratorAgent
+Generates Python code for complex operations
+Selects appropriate libraries (pandas, matplotlib, etc.)
+Creates visualizations based on query intent
+CodeExecutorAgent
+Executes Python code in a sandboxed environment
+Captures outputs, visualizations, and results
+Handles execution errors gracefully
+ResultCombinerAgent
+Joins results from multiple execution paths
+Determines the best presentation format
+Creates final visualizations and summaries
+System Architecture
+Workflow Orchestrator
+Manages the finite-state machine (FSM) for data processing
+Tracks state transitions: FILE_DROPPED → CLASSIFIED → PROFILED → DICT_DRAFT → DICT_REVIEWED → READY → BULK_LOADED → DONE
+Prevents invalid state transitions
+Task Scheduler
+Coordinates execution of tasks based on workflow state
+Manages dependencies between agents
+Handles parallel execution when possible
+Artifact Registry
+Tracks all generated artifacts with immutable hashes
+Maintains provenance of all system outputs
+Enables reproducibility of results
+Event-Driven Updates
+Real-time agent activity tracking via Server-Sent Events (SSE)
+Push-based updates to the UI
+Detailed tracking of agent activities and state transitions
+Implementation Guidelines
+Use GPT-4.1 nano for all agent LLM tasks
+Single file with multiple functions where possible
+Focus on demo functionality without extensive error handling
+Use "temp" folder for all uploads and generated files
+Use "test" folder for test files
+Regular GitHub commits for version control
+UI Components
+Streamlit-based interface for simplicity and rapid development
+Execution plan visualization showing SQL vs Python components
+Real-time agent activity display with color-coding
+Interactive query refinement based on conversational context
+This architecture fully embraces the agentic AI paradigm, allowing the LLM to make all decisions dynamically rather than following predefined rules, creating a flexible system that can handle a wide range of data analysis tasks.
 
 ## Setup Instructions
 
