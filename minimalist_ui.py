@@ -138,6 +138,44 @@ def index():
             margin-bottom: 0;
         }
         
+        /* Agent activity styling */
+        .agent-activity {
+            font-size: 0.8rem;
+            color: #6b7280;
+            margin-bottom: 0.2rem;
+            padding: 0.2rem 0;
+            line-height: 1.2;
+        }
+        
+        .agent-activity strong {
+            color: #374151;
+        }
+        
+        .workflow-state {
+            font-size: 0.75rem;
+            color: #6b7280;
+            font-weight: normal;
+        }
+        
+        /* Make progress messages more compact */
+        .progress-message {
+            margin-bottom: 0;
+            padding-bottom: 0;
+        }
+        
+        .progress-message .content {
+            padding-top: 0.25rem;
+            padding-bottom: 0.25rem;
+        }
+        
+        /* Group agent activities visually */
+        .agent-activities-container {
+            background-color: #f9fafb;
+            border-radius: 0.5rem;
+            padding: 0.5rem;
+            margin-bottom: 0.5rem;
+        }
+        
         .input-container {
             position: relative;
             border: 1px solid var(--border-color);
@@ -464,12 +502,8 @@ def index():
                 const avatar = document.createElement('div');
                 avatar.className = 'avatar bot-avatar';
                 
-                // Use different icon for progress messages
-                if (isProgressMessage) {
-                    avatar.innerHTML = '<i class="fas fa-cog fa-spin"></i>';
-                } else {
-                    avatar.innerHTML = '<i class="fas fa-robot"></i>';
-                }
+                // Use the same robot icon for all messages
+                avatar.innerHTML = '<i class="fas fa-robot"></i>';
                 
                 // Create content
                 const contentElement = document.createElement('div');
@@ -818,6 +852,7 @@ def index():
             // Function to poll for agent activities
             let lastTimestamp = 0;
             let pollingInterval = null;
+            let displayedEventIds = new Set(); // Track which events we've already displayed
             
             function pollAgentActivities() {
                 console.log('Starting to poll for agent activities');
@@ -827,8 +862,9 @@ def index():
                     clearInterval(pollingInterval);
                 }
                 
-                // Reset timestamp to get all events
+                // Reset tracking variables
                 lastTimestamp = 0;
+                displayedEventIds.clear();
                 
                 // Define the polling function
                 async function fetchEvents() {
@@ -849,17 +885,72 @@ def index():
                             // Sort events by timestamp
                             data.events.sort((a, b) => a.timestamp - b.timestamp);
                             
-                            // Display each event
+                            // Group events by agent for more compact display
+                            const eventsByAgent = {};
+                            const agentFinalStates = {};
+                            
+                            // First pass: group events by agent and find final states
                             data.events.forEach(eventData => {
-                                console.log('Displaying agent event:', eventData.agent, eventData.workflow_state, eventData.message);
+                                const eventId = `${eventData.agent}-${eventData.workflow_state}-${eventData.message}`;
                                 
-                                // Create a message showing which agent is active, the workflow state, and what it's doing
-                                const statusMessage = `<p><strong>${eventData.agent}</strong> <span class="workflow-state">[${eventData.workflow_state}]</span>: ${eventData.message}</p>`;
-                                addBotMessage(statusMessage, true); // true means this is a progress message
+                                // Skip if we've already displayed this exact event
+                                if (displayedEventIds.has(eventId)) {
+                                    return;
+                                }
                                 
-                                // Update the last timestamp
-                                lastTimestamp = Math.max(lastTimestamp, eventData.timestamp);
+                                // Group by agent
+                                if (!eventsByAgent[eventData.agent]) {
+                                    eventsByAgent[eventData.agent] = [];
+                                }
+                                
+                                // Only store the event if it's a new workflow state for this agent
+                                // or if it's the final state for this agent
+                                const isNewState = !agentFinalStates[eventData.agent] || 
+                                                 agentFinalStates[eventData.agent] !== eventData.workflow_state;
+                                
+                                // Update the final state for this agent
+                                agentFinalStates[eventData.agent] = eventData.workflow_state;
+                                
+                                // Only add the event if it's a new state or the final message
+                                if (isNewState) {
+                                    eventsByAgent[eventData.agent].push({
+                                        eventData,
+                                        eventId
+                                    });
+                                }
+                                
+                                // Mark as displayed
+                                displayedEventIds.add(eventId);
                             });
+                            
+                            // Second pass: display events grouped by agent
+                            if (Object.keys(eventsByAgent).length > 0) {
+                                console.log(`Displaying events for ${Object.keys(eventsByAgent).length} agents`);
+                                
+                                // Create a container for all agent events
+                                let agentEvents = `<div class="agent-activities-container">`;
+                                
+                                // Add each agent's final state to the container
+                                Object.keys(eventsByAgent).forEach(agent => {
+                                    // Get the final event for this agent
+                                    const events = eventsByAgent[agent];
+                                    if (events.length === 0) return;
+                                    
+                                    const finalEvent = events[events.length - 1].eventData;
+                                    agentEvents += `<p class="agent-activity"><strong>${finalEvent.agent}</strong> <span class="workflow-state">[${finalEvent.workflow_state}]</span>: ${finalEvent.message}</p>`;
+                                });
+                                
+                                agentEvents += `</div>`;
+                                
+                                // Add all agent events as a single message
+                                addBotMessage(agentEvents, true);
+                            }
+                                
+                            // Update the last timestamp from the latest event
+                            if (data.events.length > 0) {
+                                const latestEvent = data.events[data.events.length - 1];
+                                lastTimestamp = Math.max(lastTimestamp, latestEvent.timestamp);
+                            }
                             
                             // Check if we're done
                             const lastEvent = data.events[data.events.length - 1];
@@ -895,9 +986,6 @@ def index():
                 try {
                     // Show typing indicator
                     addTypingIndicator();
-                    
-                    // Add initial message about file upload
-                    addBotMessage(`<p><strong>WorkflowOrchestratorAgent</strong> <span class="workflow-state">[INITIALIZING]</span>: Starting to process file: ${file.name}</p>`, true);
                     
                     // Start polling for agent activities
                     const poller = pollAgentActivities();
@@ -956,16 +1044,8 @@ def index():
                                 message += `<p><i class="fas fa-info-circle"></i> This is a schema file. Tables have been created with sample data.</p>`;
                             }
                             
-                            if (result.analysis.sample_questions && result.analysis.sample_questions.length > 0) {
-                                message += `<p><strong>You can ask questions like:</strong></p><ul>`;
-                                result.analysis.sample_questions.forEach(question => {
-                                    message += `<li>${question}</li>`;
-                                });
-                                message += `</ul>`;
-                            }
+                            // Don't display sample questions - they're redundant with agent events
                         }
-                        
-                        message += `<p class="completion-message">You can now ask questions about your data!</p>`;
                         
                         addBotMessage(message);
                         
