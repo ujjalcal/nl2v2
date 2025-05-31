@@ -138,6 +138,44 @@ def index():
             margin-bottom: 0;
         }
         
+        /* Agent activity styling */
+        .agent-activity {
+            font-size: 0.8rem;
+            color: #6b7280;
+            margin-bottom: 0.2rem;
+            padding: 0.2rem 0;
+            line-height: 1.2;
+        }
+        
+        .agent-activity strong {
+            color: #374151;
+        }
+        
+        .workflow-state {
+            font-size: 0.75rem;
+            color: #6b7280;
+            font-weight: normal;
+        }
+        
+        /* Make progress messages more compact */
+        .progress-message {
+            margin-bottom: 0;
+            padding-bottom: 0;
+        }
+        
+        .progress-message .content {
+            padding-top: 0.25rem;
+            padding-bottom: 0.25rem;
+        }
+        
+        /* Group agent activities visually */
+        .agent-activities-container {
+            background-color: #f9fafb;
+            border-radius: 0.5rem;
+            padding: 0.5rem;
+            margin-bottom: 0.5rem;
+        }
+        
         .input-container {
             position: relative;
             border: 1px solid var(--border-color);
@@ -173,7 +211,6 @@ def index():
             cursor: pointer;
             display: flex;
             align-items: center;
-            justify-content: center;
             transition: color 0.2s;
         }
         
@@ -322,6 +359,55 @@ def index():
             border-radius: 0.25rem;
         }
         
+        .progress-container {
+            display: none; /* Hide the old progress container */
+        }
+        
+        /* Style for progress messages */
+        .progress-message {
+            opacity: 0.9;
+        }
+        
+        .progress-message .content {
+            background-color: #f0f9ff;
+            border-left: 3px solid var(--primary-color);
+            padding-left: 0.75rem;
+        }
+        
+        .progress-message .content p {
+            margin: 0.25rem 0;
+        }
+        
+        .progress-message .content strong {
+            color: var(--primary-color);
+            font-family: monospace;
+            font-size: 0.9rem;
+        }
+        
+        .progress-message .workflow-state {
+            background-color: #4b5563;
+            color: white;
+            padding: 0.1rem 0.3rem;
+            border-radius: 3px;
+            font-size: 0.7rem;
+            font-family: monospace;
+            margin-left: 0.3rem;
+        }
+        
+        /* Spinning cog animation */
+        .fa-spin {
+            animation: fa-spin 2s infinite linear;
+        }
+        
+        @keyframes fa-spin {
+            0% {
+                transform: rotate(0deg);
+            }
+            100% {
+                transform: rotate(360deg);
+            }
+        }
+        
         @media (max-width: 768px) {
             .chat-container {
                 padding: 0.5rem;
@@ -356,6 +442,15 @@ def index():
             </div>
             
             <div class="file-preview" id="filePreview"></div>
+            
+            <!-- Progress container for file processing -->
+            <div class="progress-container" id="progressContainer">
+                <div class="progress-bar-container">
+                    <div class="progress-bar" id="progressBar"></div>
+                </div>
+                <div class="progress-status" id="progressStatus">Processing file...</div>
+                <div class="progress-steps" id="progressSteps"></div>
+            </div>
             
             <div class="input-container">
                 <label for="file" class="attachment-button" title="Upload a file">
@@ -395,20 +490,35 @@ def index():
             }
             
             // Function to add a bot message
-            function addBotMessage(message) {
-                const messageElement = document.createElement('div');
-                messageElement.className = 'message';
-                messageElement.innerHTML = `
-                    <div class="avatar bot-avatar">
-                        <i class="fas fa-robot"></i>
-                    </div>
-                    <div class="content">
-                        ${message}
-                    </div>
-                `;
-                messagesContainer.appendChild(messageElement);
+            function addBotMessage(content, isProgressMessage = false) {
+                // Create message element
+                const message = document.createElement('div');
+                message.className = 'message';
+                if (isProgressMessage) {
+                    message.className += ' progress-message';
+                }
+                
+                // Create avatar
+                const avatar = document.createElement('div');
+                avatar.className = 'avatar bot-avatar';
+                
+                // Use the same robot icon for all messages
+                avatar.innerHTML = '<i class="fas fa-robot"></i>';
+                
+                // Create content
+                const contentElement = document.createElement('div');
+                contentElement.className = 'content';
+                contentElement.innerHTML = content;
+                
+                // Append avatar and content to message
+                message.appendChild(avatar);
+                message.appendChild(contentElement);
+                
+                // Append message to messages container
+                messagesContainer.appendChild(message);
+                
+                // Scroll to bottom
                 messagesContainer.scrollTop = messagesContainer.scrollHeight;
-                return messageElement;
             }
             
             // Function to add a typing indicator
@@ -439,6 +549,146 @@ def index():
                 const indicator = document.getElementById('typingIndicator');
                 if (indicator) {
                     indicator.remove();
+                }
+            }
+            
+            // Function to handle file upload with progress tracking
+            async function uploadFile(file) {
+                try {
+                    // Show typing indicator
+                    addTypingIndicator();
+                    
+                    // Show progress container
+                    const progressContainer = document.getElementById('progressContainer');
+                    const progressBar = document.getElementById('progressBar');
+                    const progressStatus = document.getElementById('progressStatus');
+                    const progressSteps = document.getElementById('progressSteps');
+                    
+                    progressContainer.style.display = 'flex';
+                    progressBar.style.width = '10%';
+                    progressStatus.textContent = 'Uploading file...';
+                    
+                    // Initialize progress steps
+                    const steps = [
+                        { id: 'upload', text: 'Uploading file', status: 'active' },
+                        { id: 'analyze', text: 'Analyzing file structure', status: 'pending' },
+                        { id: 'schema', text: 'Processing schema', status: 'pending' },
+                        { id: 'dictionary', text: 'Generating data dictionary', status: 'pending' },
+                        { id: 'sample', text: 'Creating sample data', status: 'pending' },
+                        { id: 'database', text: 'Setting up database', status: 'pending' }
+                    ];
+                    
+                    // Render initial steps
+                    function renderProgressSteps() {
+                        progressSteps.innerHTML = '';
+                        steps.forEach((step, index) => {
+                            const stepElement = document.createElement('div');
+                            stepElement.className = 'progress-step';
+                            stepElement.innerHTML = `
+                                <div class="step-indicator step-${step.status}">${index + 1}</div>
+                                <div>${step.text}</div>
+                            `;
+                            progressSteps.appendChild(stepElement);
+                        });
+                    }
+                    
+                    function updateStep(stepId, status, progress) {
+                        const stepIndex = steps.findIndex(s => s.id === stepId);
+                        if (stepIndex >= 0) {
+                            steps[stepIndex].status = status;
+                            renderProgressSteps();
+                            
+                            // Update progress bar
+                            if (progress) {
+                                progressBar.style.width = `${progress}%`;
+                            }
+                        }
+                    }
+                    
+                    renderProgressSteps();
+                    
+                    // Create form data
+                    const formData = new FormData();
+                    formData.append('file', file);
+                    
+                    // Upload file
+                    const response = await fetch('/api/upload', {
+                        method: 'POST',
+                        body: formData
+                    });
+                    
+                    if (!response.ok) {
+                        const errorText = await response.text();
+                        throw new Error(`Server error: ${response.status} ${errorText}`);
+                    }
+                    
+                    updateStep('upload', 'completed', 30);
+                    updateStep('analyze', 'active', 40);
+                    
+                    // Process response
+                    const result = await response.json();
+                    
+                    // Update progress for remaining steps
+                    updateStep('analyze', 'completed', 60);
+                    
+                    if (result.is_schema_file) {
+                        updateStep('schema', 'completed', 70);
+                        updateStep('dictionary', 'completed', 80);
+                        updateStep('sample', 'completed', 90);
+                    }
+                    
+                    updateStep('database', 'completed', 100);
+                    
+                    // Hide progress after a short delay
+                    setTimeout(() => {
+                        progressContainer.style.display = 'none';
+                    }, 2000);
+                    
+                    // Remove typing indicator
+                    removeTypingIndicator();
+                    
+                    if (result.success) {
+                        // Store paths for later use
+                        dataDictPath = result.data_dict_path;
+                        dbPath = result.db_path;
+                        
+                        // Add success message
+                        let message = `<p><i class="fas fa-check-circle" style="color: var(--primary-color);"></i> File uploaded and processed successfully!</p>`;
+                        
+                        // Add analysis details
+                        if (result.analysis) {
+                            if (result.analysis.file_type) {
+                                message += `<p>File type: <strong>${result.analysis.file_type}</strong></p>`;
+                            }
+                            
+                            if (result.analysis.tables && result.analysis.tables.length > 0) {
+                                message += `<p>Tables found: <strong>${result.analysis.tables.length}</strong></p>`;
+                                message += `<ul>`;
+                                result.analysis.tables.forEach(table => {
+                                    message += `<li>${table.name} (${table.rows} rows, ${table.columns} columns)</li>`;
+                                });
+                                message += `</ul>`;
+                            }
+                            
+                            if (result.is_schema_file) {
+                                message += `<p><i class="fas fa-info-circle"></i> This is a schema file. Tables have been created with sample data.</p>`;
+                            }
+                        }
+                        
+                        message += `<p class="completion-message">You can now ask questions about your data!</p>`;
+                        
+                        addBotMessage(message);
+                    } else {
+                        throw new Error(result.error || 'Failed to process file');
+                    }
+                } catch (error) {
+                    console.error('Error uploading file:', error);
+                    removeTypingIndicator();
+                    
+                    // Hide progress container
+                    document.getElementById('progressContainer').style.display = 'none';
+                    
+                    addBotMessage(`<p style="color: #ef4444;"><i class="fas fa-exclamation-circle"></i> <strong>Error:</strong> ${error.message}</p>`);
                 }
             }
             
@@ -579,11 +829,166 @@ def index():
                 }
             });
             
-            // Function to upload file
+            // Function to animate progress bar smoothly
+            async function animateProgress(from, to, duration = 500) {
+                const startTime = Date.now();
+                const animate = () => {
+                    const currentTime = Date.now();
+                    const elapsedTime = currentTime - startTime;
+                    const progress = Math.min(elapsedTime / duration, 1);
+                    const currentValue = from + (to - from) * progress;
+                    progressBar.style.width = `${currentValue}%`;
+                    
+                    if (progress < 1) {
+                        requestAnimationFrame(animate);
+                    }
+                };
+                animate();
+                
+                // Return a promise that resolves after the animation completes
+                return new Promise(resolve => setTimeout(resolve, duration));
+            }
+            
+            // Function to poll for agent activities
+            let lastTimestamp = 0;
+            let pollingInterval = null;
+            let displayedEventIds = new Set(); // Track which events we've already displayed
+            
+            function pollAgentActivities() {
+                console.log('Starting to poll for agent activities');
+                
+                // Clear any existing polling interval
+                if (pollingInterval) {
+                    clearInterval(pollingInterval);
+                }
+                
+                // Reset tracking variables
+                lastTimestamp = 0;
+                displayedEventIds.clear();
+                
+                // Define the polling function
+                async function fetchEvents() {
+                    try {
+                        console.log('Fetching agent events since:', lastTimestamp);
+                        // Use the local proxy endpoint which forwards to the API server
+                        const response = await fetch(`/api/events?since=${lastTimestamp}`);
+                        if (!response.ok) {
+                            console.error('Error fetching events:', response.status);
+                            return;
+                        }
+                        
+                        const data = await response.json();
+                        console.log('Received events:', data.events.length);
+                        
+                        // Process each event
+                        if (data.events && data.events.length > 0) {
+                            // Sort events by timestamp
+                            data.events.sort((a, b) => a.timestamp - b.timestamp);
+                            
+                            // Group events by agent for more compact display
+                            const eventsByAgent = {};
+                            const agentFinalStates = {};
+                            
+                            // First pass: group events by agent and find final states
+                            data.events.forEach(eventData => {
+                                const eventId = `${eventData.agent}-${eventData.workflow_state}-${eventData.message}`;
+                                
+                                // Skip if we've already displayed this exact event
+                                if (displayedEventIds.has(eventId)) {
+                                    return;
+                                }
+                                
+                                // Group by agent
+                                if (!eventsByAgent[eventData.agent]) {
+                                    eventsByAgent[eventData.agent] = [];
+                                }
+                                
+                                // Only store the event if it's a new workflow state for this agent
+                                // or if it's the final state for this agent
+                                const isNewState = !agentFinalStates[eventData.agent] || 
+                                                 agentFinalStates[eventData.agent] !== eventData.workflow_state;
+                                
+                                // Update the final state for this agent
+                                agentFinalStates[eventData.agent] = eventData.workflow_state;
+                                
+                                // Only add the event if it's a new state or the final message
+                                if (isNewState) {
+                                    eventsByAgent[eventData.agent].push({
+                                        eventData,
+                                        eventId
+                                    });
+                                }
+                                
+                                // Mark as displayed
+                                displayedEventIds.add(eventId);
+                            });
+                            
+                            // Second pass: display events grouped by agent
+                            if (Object.keys(eventsByAgent).length > 0) {
+                                console.log(`Displaying events for ${Object.keys(eventsByAgent).length} agents`);
+                                
+                                // Create a container for all agent events
+                                let agentEvents = `<div class="agent-activities-container">`;
+                                
+                                // Add each agent's final state to the container
+                                Object.keys(eventsByAgent).forEach(agent => {
+                                    // Get the final event for this agent
+                                    const events = eventsByAgent[agent];
+                                    if (events.length === 0) return;
+                                    
+                                    const finalEvent = events[events.length - 1].eventData;
+                                    agentEvents += `<p class="agent-activity"><strong>${finalEvent.agent}</strong> <span class="workflow-state">[${finalEvent.workflow_state}]</span>: ${finalEvent.message}</p>`;
+                                });
+                                
+                                agentEvents += `</div>`;
+                                
+                                // Add all agent events as a single message
+                                addBotMessage(agentEvents, true);
+                            }
+                                
+                            // Update the last timestamp from the latest event
+                            if (data.events.length > 0) {
+                                const latestEvent = data.events[data.events.length - 1];
+                                lastTimestamp = Math.max(lastTimestamp, latestEvent.timestamp);
+                            }
+                            
+                            // Check if we're done
+                            const lastEvent = data.events[data.events.length - 1];
+                            if (lastEvent.workflow_state === 'DONE' || lastEvent.workflow_state === 'ERROR') {
+                                console.log('Workflow complete, stopping polling');
+                                clearInterval(pollingInterval);
+                                pollingInterval = null;
+                            }
+                        }
+                    } catch (error) {
+                        console.error('Error polling agent activities:', error);
+                    }
+                }
+                
+                // Do an initial fetch
+                fetchEvents();
+                
+                // Set up polling interval (every 500ms)
+                pollingInterval = setInterval(fetchEvents, 500);
+                
+                return {
+                    stop: function() {
+                        if (pollingInterval) {
+                            clearInterval(pollingInterval);
+                            pollingInterval = null;
+                        }
+                    }
+                };
+            }
+            
+            // Function to upload file with progress tracking
             async function uploadFile(file) {
                 try {
                     // Show typing indicator
                     addTypingIndicator();
+                    
+                    // Start polling for agent activities
+                    const poller = pollAgentActivities();
                     
                     // Create form data
                     const formData = new FormData();
@@ -596,11 +1001,17 @@ def index():
                     });
                     
                     if (!response.ok) {
+                        // Stop polling on error
+                        poller.stop();
                         const errorText = await response.text();
                         throw new Error(`Server error: ${response.status} ${errorText}`);
                     }
                     
+                    // Wait for the response to be parsed
                     const result = await response.json();
+                    
+                    // Note: We don't need to stop the poller here as it will
+                    // automatically stop when the workflow reaches DONE or ERROR state
                     
                     // Remove typing indicator
                     removeTypingIndicator();
@@ -610,76 +1021,33 @@ def index():
                         dataDictPath = result.data_dict_path;
                         dbPath = result.db_path;
                         
-                        // Display analysis results
-                        const analysis = result.analysis;
-                        let analysisHtml = '';
+                        // Add success message
+                        let message = `<p><i class="fas fa-check-circle" style="color: var(--primary-color);"></i> File uploaded and processed successfully!</p>`;
                         
-                        if (analysis.file_type) {
-                            analysisHtml += `
-                                <p>I've analyzed your file and detected it's a <strong>${analysis.file_type}</strong> file.</p>
-                                <p style="margin-top: 0.5rem;">${analysis.description}</p>
-                            `;
-                            
-                            if (analysis.key_fields && analysis.key_fields.length > 0) {
-                                analysisHtml += `<p style="margin-top: 0.5rem;"><strong>Key fields:</strong></p><ul style="margin-left: 1.5rem;">`;
-                                analysis.key_fields.forEach(field => {
-                                    analysisHtml += `<li><strong>${field.name}</strong>: ${field.description}</li>`;
-                                });
-                                analysisHtml += `</ul>`;
+                        // Add analysis details
+                        if (result.analysis) {
+                            if (result.analysis.file_type) {
+                                message += `<p>File type: <strong>${result.analysis.file_type}</strong></p>`;
+                                message += `<p>${result.analysis.description || ''}</p>`;
                             }
                             
-                            if (analysis.sample_questions && analysis.sample_questions.length > 0) {
-                                analysisHtml += `
-                                    <p style="margin-top: 0.5rem;"><strong>You can ask questions like:</strong></p>
-                                    <ul style="margin-left: 1.5rem;">
-                                `;
-                                analysis.sample_questions.forEach(question => {
-                                    analysisHtml += `<li>${question}</li>`;
+                            if (result.analysis.tables && result.analysis.tables.length > 0) {
+                                message += `<p>Tables found: <strong>${result.analysis.tables.length}</strong></p>`;
+                                message += `<ul>`;
+                                result.analysis.tables.forEach(table => {
+                                    message += `<li>${table.name} (${table.rows} rows, ${table.columns} columns)</li>`;
                                 });
-                                analysisHtml += `</ul>`;
+                                message += `</ul>`;
                             }
-                        } else if (analysis.error) {
-                            analysisHtml = `<p style="color: #ef4444;"><i class="fas fa-exclamation-circle"></i> <strong>Error:</strong> ${analysis.error}</p>`;
+                            
+                            if (result.is_schema_file) {
+                                message += `<p><i class="fas fa-info-circle"></i> This is a schema file. Tables have been created with sample data.</p>`;
+                            }
+                            
+                            // Don't display sample questions - they're redundant with agent events
                         }
                         
-                        // Add processing steps
-                        analysisHtml += `
-                            <div style="margin-top: 1rem; border-left: 3px solid #8b5cf6; padding-left: 0.75rem; margin-bottom: 0.75rem;">
-                                <p><i class="fas fa-database"></i> <strong>Setting up your database for querying...</strong></p>
-                            </div>
-                            
-                            <div style="margin-top: 0.5rem;">
-                                <p><strong>Processing Pipeline:</strong></p>
-                                <div class="processing-step">
-                                    <i class="fas fa-check-circle step-icon"></i>
-                                    <span>File uploaded successfully</span>
-                                </div>
-                                <div class="processing-step">
-                                    <i class="fas fa-check-circle step-icon"></i>
-                                    <span>Data parsed and validated</span>
-                                </div>
-                                <div class="processing-step">
-                                    <i class="fas fa-check-circle step-icon"></i>
-                                    <span>Database created</span>
-                                </div>
-                                <div class="processing-step">
-                                    <i class="fas fa-check-circle step-icon"></i>
-                                    <span>Schema analyzed</span>
-                                </div>
-                                <div class="processing-step">
-                                    <i class="fas fa-check-circle step-icon"></i>
-                                    <span>Finalizing database</span>
-                                </div>
-                            </div>
-                            
-                            <div class="completion-message">
-                                <p><i class="fas fa-check-circle"></i> <strong>Analysis complete!</strong> Your data is now ready for querying.</p>
-                                <p style="margin-top: 0.25rem; font-size: 0.875rem;">You can now ask questions about your data using natural language.</p>
-                            </div>
-                        `;
-                        
-                        // Add bot message with analysis
-                        addBotMessage(analysisHtml);
+                        addBotMessage(message);
                         
                         // Enable send button for queries
                         sendButton.disabled = !queryInput.value.trim();
@@ -689,6 +1057,10 @@ def index():
                 } catch (error) {
                     console.error('Error uploading file:', error);
                     removeTypingIndicator();
+                    
+                    // Hide progress container
+                    document.getElementById('progressContainer').style.display = 'none';
+                    
                     addBotMessage(`<p style="color: #ef4444;"><i class="fas fa-exclamation-circle"></i> <strong>Error:</strong> ${error.message}</p>`);
                 }
             }
@@ -698,7 +1070,7 @@ def index():
                 try {
                     // Check if database is ready
                     if (!dbPath || !dataDictPath) {
-                        throw new Error('Please upload a file first');
+                        throw new Error('Please upload a data file first.');
                     }
                     
                     // Show typing indicator
@@ -870,6 +1242,27 @@ def proxy_clear_cache():
     try:
         # Forward the request to the API server
         response = requests.post('http://localhost:5000/api/clear_cache')
+        
+        # Return the API response
+        return response.content, response.status_code, {'Content-Type': 'application/json'}
+    except Exception as e:
+        return {
+            'error': f'Error forwarding request to API server: {str(e)}'
+        }, 500
+
+@app.route('/api/events', methods=['GET'])
+def proxy_events():
+    """
+    Proxy the events request to the API server.
+    """
+    import requests
+    
+    try:
+        # Get the since parameter if provided
+        since = request.args.get('since', '0')
+        
+        # Forward the request to the API server
+        response = requests.get(f'http://localhost:5000/api/events?since={since}')
         
         # Return the API response
         return response.content, response.status_code, {'Content-Type': 'application/json'}

@@ -6,8 +6,13 @@ import numpy as np
 import yaml
 import xmltodict
 import shutil
-from flask import Flask, request, jsonify
+import re
+import uuid
+from werkzeug.utils import secure_filename
+from flask import Flask, request, jsonify, Response, stream_with_context
 from flask_cors import CORS
+from queue import Queue
+import threading
 from dotenv import load_dotenv
 import openai
 from openai import OpenAI
@@ -38,6 +43,41 @@ class NpEncoder(json.JSONEncoder):
 app = Flask(__name__)
 CORS(app)
 
+# Simple global events list for tracking agent activities
+global_events = []
+
+# Agent activity tracking
+current_file_id = None
+current_workflow_state = 'IDLE'
+
+def agent_activity(agent_name, workflow_state, message, details=None):
+    """Record real agent activity to the global events list."""
+    global current_workflow_state, current_file_id, global_events
+    
+    # Update current workflow state
+    current_workflow_state = workflow_state
+    
+    # Create event data
+    event_data = {
+        'file_id': current_file_id,
+        'timestamp': int(time.time()),
+        'agent': agent_name,
+        'workflow_state': workflow_state,
+        'message': message,
+        'details': details or {}
+    }
+    
+    # Log the agent activity
+    print(f"Agent activity: {agent_name} - [{workflow_state}] - {message}")
+    app.logger.info(f"Agent activity: {agent_name} - [{workflow_state}] - {message}")
+    
+    # Add to global events list (keep last 50 events)
+    global_events.append(event_data)
+    if len(global_events) > 50:
+        global_events = global_events[-50:]
+    
+    return event_data
+
 # API Routes
 @app.route('/')
 def health_check():
@@ -48,42 +88,161 @@ def health_check():
         'version': '1.0.0'
     })
 
+@app.route('/api/events', methods=['GET'])
+def get_events():
+    """Get all agent activities."""
+    global global_events
+    
+    # Get the timestamp parameter if provided
+    timestamp = request.args.get('since', 0, type=int)
+    
+    # Filter events by timestamp if provided
+    if timestamp > 0:
+        filtered_events = [event for event in global_events if event['timestamp'] > timestamp]
+    else:
+        filtered_events = global_events
+    
+    return jsonify({
+        'events': filtered_events,
+        'current_state': current_workflow_state
+    })
+
 @app.route('/api/upload', methods=['POST'])
 def upload_file():
     """
     Handle file upload and process the file based on its type.
     Returns a JSON response with the analysis results.
     """
-    if 'file' not in request.files:
-        response = json.dumps({'error': 'No file part'}, cls=NpEncoder)
-        return response, 400, {'Content-Type': 'application/json'}
-    
-    file = request.files['file']
-    
-    if file.filename == '':
-        response = json.dumps({'error': 'No selected file'}, cls=NpEncoder)
-        return response, 400, {'Content-Type': 'application/json'}
-    
-    # Save the file to a temporary location
-    timestamp = int(time.time())
-    file_path = os.path.join('temp', f"{timestamp}_{file.filename}")
-    file.save(file_path)
-    
     try:
-        # Analyze the file with LLM
+        # Initialize a new file processing session
+        global current_file_id, global_events
+        current_file_id = str(uuid.uuid4())
+        
+        # Clear previous events
+        global_events = []
+        
+        # Check if file was uploaded
+        if 'file' not in request.files:
+            agent_activity('WorkflowOrchestratorAgent', 'ERROR', 'No file uploaded')
+            response = json.dumps({'error': 'No file part'}, cls=NpEncoder)
+            return response, 400, {'Content-Type': 'application/json'}
+        
+        file = request.files['file']
+        
+        # Check if file is empty
+        if file.filename == '':
+            agent_activity('WorkflowOrchestratorAgent', 'ERROR', 'No file selected')
+            response = json.dumps({'error': 'No selected file'}, cls=NpEncoder)
+            return response, 400, {'Content-Type': 'application/json'}
+        
+        # Workflow orchestrator starts the process
+        agent_activity('WorkflowOrchestratorAgent', 'FILE_DROPPED', f'Starting to process file: {file.filename}')
+        
+        # File upload agent receives the file
+        agent_activity('FileUploadAgent', 'FILE_DROPPED', f'Received file: {file.filename}')
+        
+        # Save the file to a temporary location
+        timestamp = int(time.time())
+        file_path = os.path.join('temp', f"{timestamp}_{secure_filename(file.filename)}")
+        file.save(file_path)
+        
+        # File upload agent confirms file is saved
+        agent_activity('FileUploadAgent', 'FILE_DROPPED', 'File saved successfully')
+        
+        # File classifier agent begins classification
+        agent_activity('FileClassifierAgent', 'CLASSIFYING', 'Starting file classification')
+        
+        # Analyze the file with LLM for classification
+        agent_activity('FileClassifierAgent', 'CLASSIFYING', 'Analyzing file content and structure')
         analysis_result = analyze_file_with_llm(file_path)
+        agent_activity('FileClassifierAgent', 'CLASSIFIED', 'File classification complete', analysis_result)
         
         # Process the file based on its type
         db_path = os.path.join('temp', f"{timestamp}_database.db")
-        process_file(file_path, db_path)
+        is_schema_file = False
+        data_dict_path = file_path
+        
+        # Start profiling
+        agent_activity('DataProfilerAgent', 'PROFILING', 'Starting data profiling')
+        
+        # Check if this is a schema file with multiple tables
+        if file_path.lower().endswith('.csv'):
+            df = pd.read_csv(file_path)
+            if all(col in df.columns for col in ['TABLE_NAME', 'COLUMN_NAME', 'DATA_TYPE']):
+                is_schema_file = True
+                # Generate data dictionary path for schema file
+                data_dict_path = os.path.splitext(file_path)[0] + "_dict.json"
+                agent_activity('DataProfilerAgent', 'PROFILED', 'Schema file identified and profiled', {
+                    'is_schema_file': True,
+                    'tables_count': len(df['TABLE_NAME'].unique())
+                })
+            else:
+                agent_activity('DataProfilerAgent', 'PROFILED', 'Data file profiled', {
+                    'is_schema_file': False,
+                    'rows_count': len(df),
+                    'columns_count': len(df.columns)
+                })
+        else:
+            agent_activity('DataProfilerAgent', 'PROFILED', 'Data file profiled')
+        
+        # Process the file based on whether it's a schema file or not
+        if is_schema_file:
+            # For schema files, we need to create the data dictionary
+            agent_activity('DictionarySynthesizerAgent', 'DICT_DRAFTING', 'Creating draft data dictionary')
+            df = pd.read_csv(file_path)
+            
+            # Process schema file with real agent activities
+            process_schema_file(file_path, db_path, df)
+            agent_activity('DictionarySynthesizerAgent', 'DICT_DRAFT', 'Data dictionary draft created')
+            
+            # Dictionary review (real agent activity)
+            agent_activity('DictionaryReviewerAgent', 'DICT_REVIEWING', 'Reviewing data dictionary')
+            
+            # Simulate the review process (in a real system, this would be a separate agent)
+            data_dict_exists = os.path.exists(os.path.splitext(file_path)[0] + "_dict.json")
+            review_details = {
+                'data_dictionary_exists': data_dict_exists,
+                'review_status': 'approved' if data_dict_exists else 'failed'
+            }
+            agent_activity('DictionaryReviewerAgent', 'DICT_REVIEWED', 
+                          'Data dictionary reviewed and approved' if data_dict_exists else 'Review failed - dictionary not found',
+                          review_details)
+            
+            # Update the data_dict_path to point to the generated JSON file
+            data_dict_path = os.path.splitext(file_path)[0] + "_dict.json"
+            
+            # Ready state
+            agent_activity('WorkflowOrchestratorAgent', 'READY', 'Preparing for sample data generation')
+            
+            # Sample data generation
+            agent_activity('SampleDataGeneratorAgent', 'BULK_LOADING', 'Generating realistic sample data')
+            
+            # Make sure the file exists
+            if not os.path.exists(data_dict_path):
+                # If the file doesn't exist, fall back to the original file path
+                data_dict_path = file_path
+                agent_activity('SampleDataGeneratorAgent', 'ERROR', 'Dictionary file not found, using original file')
+            else:
+                agent_activity('SampleDataGeneratorAgent', 'BULK_LOADED', 'Sample data generated successfully')
+        else:
+            # For regular data files
+            agent_activity('WorkflowOrchestratorAgent', 'READY', 'Preparing database setup')
+            agent_activity('DatabaseBuilderAgent', 'BULK_LOADING', 'Setting up database')
+            process_file(file_path, db_path)
+            agent_activity('DatabaseBuilderAgent', 'BULK_LOADED', 'Database setup complete')
+        
+        # Final progress update
+        agent_activity('WorkflowOrchestratorAgent', 'DONE', 'Processing complete - Ready for queries')
         
         # Return the analysis result and paths
         response = {
             'success': True,
             'message': 'File uploaded and processed successfully',
             'analysis': analysis_result,
-            'data_dict_path': file_path,
-            'db_path': db_path
+            'is_schema_file': is_schema_file,
+            'data_dict_path': data_dict_path,
+            'db_path': db_path,
+            'file_id': current_file_id
         }
         
         return json.dumps(response, cls=NpEncoder), 200, {'Content-Type': 'application/json'}
@@ -400,15 +559,29 @@ def analyze_file_with_llm(file_path):
     """
     Analyze the file content using GPT-4.1 Nano to determine if it contains
     schema or actual data, and return a structured analysis response.
+    Handles schema files with multiple table definitions.
     """
     # Read the first few lines of the file to analyze
     file_ext = os.path.splitext(file_path)[1].lower()
     sample_content = ""
+    is_schema_file = False
+    tables_info = {}
     
     try:
         if file_ext == '.csv':
-            df = pd.read_csv(file_path, nrows=5)
-            sample_content = df.to_csv(index=False)
+            df = pd.read_csv(file_path)
+            # Check if this is a schema definition file with multiple tables
+            if all(col in df.columns for col in ['TABLE_NAME', 'COLUMN_NAME', 'DATA_TYPE']):
+                is_schema_file = True
+                # Group by table name to get table structure
+                for table_name, group in df.groupby('TABLE_NAME'):
+                    tables_info[table_name] = {
+                        'columns': group['COLUMN_NAME'].tolist(),
+                        'data_types': dict(zip(group['COLUMN_NAME'], group['DATA_TYPE']))
+                    }
+                sample_content = df.head(20).to_csv(index=False)
+            else:
+                sample_content = df.head(5).to_csv(index=False)
         elif file_ext == '.json':
             with open(file_path, 'r') as f:
                 data = json.load(f)
@@ -433,7 +606,34 @@ def analyze_file_with_llm(file_path):
             'error': f'Error reading file: {str(e)}'
         }
     
-    # Prepare the prompt for GPT
+    # If it's a schema file with multiple tables, create a custom analysis
+    if is_schema_file and tables_info:
+        tables_summary = []
+        for table_name, info in tables_info.items():
+            tables_summary.append({
+                'name': table_name,
+                'columns_count': len(info['columns']),
+                'columns': info['columns'][:5] + ['...'] if len(info['columns']) > 5 else info['columns']
+            })
+        
+        # Create sample questions based on the tables
+        sample_questions = [
+            f"What is the total count of records in {tables_summary[0]['name']}?",
+            f"What are the unique values of {tables_summary[0]['columns'][0]} in {tables_summary[0]['name']}?"
+        ]
+        
+        # If we have multiple tables, add a join question
+        if len(tables_summary) > 1:
+            sample_questions.append(f"What is the relationship between {tables_summary[0]['name']} and {tables_summary[1]['name']}?")
+        
+        return {
+            'file_type': 'schema',
+            'description': f'Schema definition file containing {len(tables_info)} tables',
+            'tables': tables_summary,
+            'sample_questions': sample_questions
+        }
+    
+    # For non-schema files or if schema detection failed, use GPT to analyze
     prompt = f"""
     I have a data file with the following content (showing first few lines/records):
     
@@ -484,10 +684,14 @@ def process_file(file_path, db_path):
     """
     Process the uploaded file and create a SQLite database.
     Supports CSV, JSON, XML, YAML, and Excel files.
+    Also handles schema files with multiple table definitions.
     """
     file_ext = os.path.splitext(file_path)[1].lower()
     
-    # Read the file into a pandas DataFrame
+    # Note: Schema file detection and processing is now handled in the upload_file function
+    # This function now only processes regular data files
+    
+    # If not a schema file, process as regular data file
     if file_ext == '.csv':
         df = pd.read_csv(file_path)
     elif file_ext == '.json':
@@ -601,15 +805,56 @@ def convert_to_sql(query, table_info, data_dict_path):
     """
     Convert a natural language query to SQL using GPT-4.1 Nano.
     Returns a dictionary with the SQL query and reasoning.
+    Handles multiple tables and relationships between them.
     """
     # Read a sample of the data to provide context
     file_ext = os.path.splitext(data_dict_path)[1].lower()
     sample_content = ""
+    is_schema_file = False
+    tables_data = {}
     
     try:
+        # Check if this is a schema file with multiple tables
         if file_ext == '.csv':
-            df = pd.read_csv(data_dict_path, nrows=5)
-            sample_content = df.to_csv(index=False)
+            df = pd.read_csv(data_dict_path)
+            if all(col in df.columns for col in ['TABLE_NAME', 'COLUMN_NAME', 'DATA_TYPE']):
+                is_schema_file = True
+                # Extract db_path from data_dict_path (assuming they're in the same directory)
+                db_dir = os.path.dirname(data_dict_path)
+                db_name = os.path.basename(data_dict_path).split('.')[0]
+                if '_' in db_name and db_name.split('_')[0].isdigit():
+                    timestamp = db_name.split('_')[0]
+                    db_path = os.path.join(db_dir, f"{timestamp}_database.db")
+                else:
+                    db_path = os.path.join(db_dir, "database.db")
+                
+                # Get sample data for each table from the database
+                conn = sqlite3.connect(db_path)
+                cursor = conn.cursor()
+                
+                for table_name in table_info.keys():
+                    try:
+                        cursor.execute(f"SELECT * FROM {table_name} LIMIT 3;")
+                        columns = [description[0] for description in cursor.description]
+                        rows = cursor.fetchall()
+                        
+                        # Format as CSV-like string
+                        table_sample = ",".join(columns) + "\n"
+                        for row in rows:
+                            table_sample += ",".join([str(val) for val in row]) + "\n"
+                        
+                        tables_data[table_name] = table_sample
+                    except Exception as e:
+                        print(f"Error getting sample data for table {table_name}: {str(e)}")
+                
+                conn.close()
+                
+                # Use the schema file as sample content if we couldn't get data
+                if not tables_data:
+                    sample_content = df.head(10).to_csv(index=False)
+            else:
+                df = pd.read_csv(data_dict_path, nrows=5)
+                sample_content = df.to_csv(index=False)
         elif file_ext == '.json':
             with open(data_dict_path, 'r') as f:
                 data = json.load(f)
@@ -640,15 +885,27 @@ def convert_to_sql(query, table_info, data_dict_path):
             clean_table_name = '_'.join(clean_table_name.split('_')[1:])
             
         tables_str += f"Table: {clean_table_name}\n"
-        tables_str += f"Columns: {', '.join(columns)}\n\n"
+        tables_str += f"Columns: {', '.join(columns)}\n"
+        
+        # Add sample data for this table if available
+        if table_name in tables_data:
+            tables_str += f"Sample data:\n{tables_data[table_name]}\n"
+        
+        tables_str += "\n"
+    
+    # Add potential relationships between tables
+    if len(table_info) > 1:
+        relationships_str = identify_potential_relationships(table_info)
+        if relationships_str:
+            tables_str += f"Potential relationships between tables:\n{relationships_str}\n"
     
     prompt = f"""
     I have a SQLite database with the following structure:
     
     {tables_str}
     
-    Here's a sample of the data:
-    {sample_content}
+    {'Here\'s a sample of the data:' if not is_schema_file else ''}
+    {sample_content if not is_schema_file else ''}
     
     Convert the following natural language query to SQL:
     "{query}"
@@ -681,6 +938,579 @@ def convert_to_sql(query, table_info, data_dict_path):
         return {
             'error': f'Error converting query to SQL: {str(e)}'
         }
+
+def identify_potential_relationships(table_info):
+    """
+    Identify potential relationships between tables based on column names.
+    
+    Args:
+        table_info: Dictionary mapping table names to their columns
+    
+    Returns:
+        String describing potential relationships
+    """
+    relationships = []
+    
+    # Get all tables and their columns
+    tables = list(table_info.keys())
+    
+    # Look for common column names that might indicate relationships
+    for i in range(len(tables)):
+        for j in range(i+1, len(tables)):
+            table1 = tables[i]
+            table2 = tables[j]
+            columns1 = table_info[table1]
+            columns2 = table_info[table2]
+            
+            # Find common columns
+            common_columns = set(columns1).intersection(set(columns2))
+            
+            # Look for ID columns that might indicate relationships
+            for col in common_columns:
+                if col.lower().endswith('id') or col.lower() == 'id':
+                    relationships.append(f"{table1}.{col} may join with {table2}.{col}")
+            
+            # Look for columns in table1 that might reference table2
+            for col in columns1:
+                # Check if column name contains the name of table2 (e.g., customer_id in orders table)
+                if table2.lower() in col.lower() and col.lower().endswith('id'):
+                    relationships.append(f"{table1}.{col} may reference {table2}")
+            
+            # Look for columns in table2 that might reference table1
+            for col in columns2:
+                # Check if column name contains the name of table1
+                if table1.lower() in col.lower() and col.lower().endswith('id'):
+                    relationships.append(f"{table2}.{col} may reference {table1}")
+    
+    return "\n".join(relationships) if relationships else ""
+
+def process_schema_file(file_path, db_path, df):
+    """
+    Process a schema definition file and create tables with sample data.
+    Also generates a comprehensive data dictionary using LLM and uses it
+    to create realistic sample data.
+    
+    Args:
+        file_path: Path to the schema file
+        db_path: Path to the SQLite database to create
+        df: DataFrame containing the schema definition
+    
+    Returns:
+        True if successful
+    """
+    # Group by table name
+    tables = {}
+    for _, row in df.iterrows():
+        table_name = row['TABLE_NAME']
+        column_name = row['COLUMN_NAME']
+        data_type = row['DATA_TYPE']
+        
+        if table_name not in tables:
+            tables[table_name] = []
+        
+        column_info = {
+            "name": column_name,
+            "type": data_type,
+            "ordinal_position": row.get('ORDINAL_POSITION', 0)
+        }
+        
+        tables[table_name].append(column_info)
+    
+    # Generate data dictionary using LLM first
+    print(f"\n[DEBUG] Generating data dictionary for schema with {len(tables)} tables")
+    agent_activity('DictionarySynthesizerAgent', 'DICT_DRAFTING', f'Creating dictionary for {len(tables)} tables')
+    data_dict = generate_data_dictionary_for_schema(tables)
+    print(f"[DEBUG] Data dictionary generated with keys: {list(data_dict.keys())}")
+    if 'tables' in data_dict:
+        print(f"[DEBUG] Tables in data dictionary: {list(data_dict['tables'].keys())}")
+    
+    # Save data dictionary to file
+    data_dict_path = os.path.splitext(file_path)[0] + "_dict.json"
+    print(f"[DEBUG] Saving data dictionary to: {data_dict_path}")
+    with open(data_dict_path, 'w') as f:
+        json.dump(data_dict, f, indent=2, cls=NpEncoder)
+    print(f"[DEBUG] Data dictionary saved successfully")
+    agent_activity('DictionarySynthesizerAgent', 'DICT_DRAFT', 'Data dictionary created successfully')
+    
+    # Create SQLite database
+    conn = sqlite3.connect(db_path)
+    
+    # Create tables and generate sample data for each using the data dictionary
+    for table_name, columns in tables.items():
+        # Sort columns by ordinal position if available
+        columns.sort(key=lambda x: x.get("ordinal_position", 0))
+        
+        # Create table
+        create_table_sql = f"CREATE TABLE IF NOT EXISTS {table_name} (\n"
+        column_defs = []
+        
+        for col in columns:
+            col_name = col["name"]
+            col_type = map_data_type_to_sqlite(col["type"])
+            column_defs.append(f"    {col_name} {col_type}")
+        
+        create_table_sql += ",\n".join(column_defs)
+        create_table_sql += "\n);"
+        
+        # Execute the CREATE TABLE statement without try-except to allow errors to propagate
+        conn.execute(create_table_sql)
+        
+        # Generate sample data using the data dictionary (5 rows per table)
+        print(f"\n[DEBUG] Generating sample data for table: {table_name}")
+        print(f"[DEBUG] Using data dictionary with keys: {list(data_dict.keys())}")
+        if 'tables' in data_dict and table_name in data_dict['tables']:
+            print(f"[DEBUG] Table info available in data dictionary")
+        else:
+            print(f"[DEBUG] WARNING: Table {table_name} not found in data dictionary tables: {list(data_dict.get('tables', {}).keys())}")
+        
+        # Generate sample data with NO FALLBACKS - let errors propagate
+        print(f"\n[DEBUG] Generating realistic sample data for table: {table_name}")
+        print(f"[DEBUG] Number of columns: {len(columns)}")
+        print(f"[DEBUG] Data dict keys: {list(data_dict.keys())}")
+        
+        # Show table description if available
+        if 'tables' in data_dict and table_name in data_dict['tables'] and 'table_description' in data_dict['tables'][table_name]:
+            print(f"[DEBUG] Found table in data dictionary. Table description: {data_dict['tables'][table_name]['table_description']}")
+        
+        # Call LLM for sample data generation - no try/except to allow errors to propagate
+        print(f"\n[DEBUG] Sending prompt to LLM for table {table_name}")
+        agent_activity('SampleDataGeneratorAgent', 'BULK_LOADING', f'Generating sample data for table {table_name}')
+        sample_data = generate_realistic_sample_data(table_name, columns, data_dict, 5)
+        
+        # Insert sample data
+        if sample_data:
+            print(f"[DEBUG] Successfully generated {len(sample_data)} rows of sample data")
+            agent_activity('DatabaseBuilderAgent', 'BULK_LOADING', f'Creating table {table_name} with {len(sample_data)} rows')
+            col_names = [col["name"] for col in columns]
+            placeholders = ", ".join(["?" for _ in col_names])
+            insert_sql = f"INSERT INTO {table_name} ({', '.join(col_names)}) VALUES ({placeholders})"
+            
+            for row in sample_data:
+                conn.execute(insert_sql, row)
+    
+    conn.commit()
+    conn.close()
+    
+    # Emit final event for schema processing completion
+    agent_activity('DatabaseBuilderAgent', 'BULK_LOADED', f'Successfully created database with {len(tables)} tables')
+    
+    return True
+
+def generate_data_dictionary_for_schema(tables):
+    """
+    Generate a comprehensive data dictionary for schema tables using LLM.
+    
+    Args:
+        tables: Dictionary mapping table names to their column definitions
+    
+    Returns:
+        Data dictionary object
+    """
+    # Initialize the data dictionary
+    data_dict = {
+        "dataset_name": "multi_table_schema",
+        "description": "Schema with multiple related tables",
+        "tables": {}
+    }
+    
+    # Process each table
+    for table_name, columns in tables.items():
+        # Prepare column information for LLM
+        columns_info = ""
+        for col in columns:
+            columns_info += f"Column: {col['name']}, Type: {col['type']}\n"
+        
+        # Create prompt for GPT
+        prompt = f"""
+        I have a database table with the following structure:
+        
+        Table: {table_name}
+        {columns_info}
+        
+        Please analyze this table structure and provide:
+        1. A description of what this table likely represents
+        2. For each column, provide:
+           - A description of what the column represents
+           - Whether it's likely categorical
+           - Possible constraints
+           - Synonyms for the column name
+           - Potential relationships with other columns
+        
+        Format your response as YAML with the following structure:
+        ```yaml
+        table_description: Description of the table
+        columns:
+          column_name1:
+            description: What this column represents
+            categorical: true/false
+            constraints: Any constraints (e.g., "positive numbers only")
+            synonyms: [synonym1, synonym2]
+          column_name2:
+            ...
+        ```
+        """
+        
+        try:
+            response = client.chat.completions.create(
+                model="gpt-4.1-nano",
+                messages=[
+                    {"role": "system", "content": "You are an AI assistant that specializes in database schema analysis. Respond in YAML format."},
+                    {"role": "user", "content": prompt}
+                ]
+            )
+            
+            # Get the response content and clean it
+            content = clean_yaml_response(response.choices[0].message.content)
+            
+            try:
+                # Parse YAML response
+                table_dict = yaml.safe_load(content)
+                
+                # Validate the structure
+                if not isinstance(table_dict, dict):
+                    raise ValueError("LLM response is not a valid dictionary")
+                
+                # Ensure required keys exist
+                if 'table_description' not in table_dict:
+                    table_dict['table_description'] = f"Table containing {table_name} data"
+                
+                if 'columns' not in table_dict or not isinstance(table_dict['columns'], dict):
+                    table_dict['columns'] = {}
+                
+                # Ensure all columns have entries
+                for col in columns:
+                    col_name = col["name"]
+                    if col_name not in table_dict['columns']:
+                        table_dict['columns'][col_name] = {
+                            "description": f"{col_name} of type {col['type']}",
+                            "categorical": col['type'].upper() in ['TEXT', 'VARCHAR', 'CHAR', 'STRING'],
+                            "constraints": "",
+                            "synonyms": [col_name.replace("_", " ")]
+                        }
+                
+                # Add to data dictionary
+                data_dict["tables"][table_name] = table_dict
+                
+            except Exception as yaml_error:
+                print(f"Error parsing YAML for table {table_name}: {str(yaml_error)}")
+                # Add basic information if YAML parsing fails
+                data_dict["tables"][table_name] = {
+                    "table_description": f"Table containing {table_name} data",
+                    "columns": {col["name"]: {
+                        "description": f"{col['name']} of type {col['type']}",
+                        "categorical": col['type'].upper() in ['TEXT', 'VARCHAR', 'CHAR', 'STRING'],
+                        "constraints": "",
+                        "synonyms": [col["name"].replace("_", " ")]
+                    } for col in columns}
+                }
+            
+        except Exception as e:
+            print(f"Error generating data dictionary for table {table_name}: {str(e)}")
+            # Add basic information if LLM fails
+            data_dict["tables"][table_name] = {
+                "table_description": f"Table containing {table_name} data",
+                "columns": {col["name"]: {
+                    "description": f"{col['name']} of type {col['type']}",
+                    "categorical": col['type'].upper() in ['TEXT', 'VARCHAR', 'CHAR', 'STRING'],
+                    "constraints": "",
+                    "synonyms": [col["name"].replace("_", " ")]
+                } for col in columns}
+            }
+    
+    # Add relationships between tables
+    data_dict["relationships"] = identify_relationships_for_dict(tables)
+    
+    return data_dict
+
+def identify_relationships_for_dict(tables):
+    """
+    Identify relationships between tables for the data dictionary.
+    
+    Args:
+        tables: Dictionary mapping table names to their column definitions
+    
+    Returns:
+        List of relationship dictionaries
+    """
+    relationships = []
+    
+    # Get all tables and their columns
+    table_names = list(tables.keys())
+    
+    # Look for common column names that might indicate relationships
+    for i in range(len(table_names)):
+        for j in range(i+1, len(table_names)):
+            table1 = table_names[i]
+            table2 = table_names[j]
+            columns1 = [col["name"] for col in tables[table1]]
+            columns2 = [col["name"] for col in tables[table2]]
+            
+            # Find common columns
+            common_columns = set(columns1).intersection(set(columns2))
+            
+            # Look for ID columns that might indicate relationships
+            for col in common_columns:
+                if col.lower().endswith('id') or col.lower() == 'id':
+                    relationships.append({
+                        "type": "join",
+                        "table1": table1,
+                        "table2": table2,
+                        "column": col,
+                        "description": f"{table1}.{col} may join with {table2}.{col}"
+                    })
+            
+            # Look for columns in table1 that might reference table2
+            for col in columns1:
+                # Check if column name contains the name of table2 (e.g., customer_id in orders table)
+                if table2.lower() in col.lower() and col.lower().endswith('id'):
+                    relationships.append({
+                        "type": "reference",
+                        "from_table": table1,
+                        "to_table": table2,
+                        "column": col,
+                        "description": f"{table1}.{col} may reference {table2}"
+                    })
+            
+            # Look for columns in table2 that might reference table1
+            for col in columns2:
+                # Check if column name contains the name of table1
+                if table1.lower() in col.lower() and col.lower().endswith('id'):
+                    relationships.append({
+                        "type": "reference",
+                        "from_table": table2,
+                        "to_table": table1,
+                        "column": col,
+                        "description": f"{table2}.{col} may reference {table1}"
+                    })
+    
+    return relationships
+
+def map_data_type_to_sqlite(data_type):
+    """
+    Map data types from schema to SQLite data types.
+    
+    Args:
+        data_type: Original data type from schema
+    
+    Returns:
+        SQLite data type
+    """
+    data_type = data_type.upper()
+    
+    if data_type in ['TEXT', 'VARCHAR', 'CHAR', 'STRING']:
+        return 'TEXT'
+    elif data_type in ['NUMBER', 'INT', 'INTEGER', 'BIGINT', 'SMALLINT']:
+        return 'INTEGER'
+    elif data_type in ['FLOAT', 'DOUBLE', 'DECIMAL', 'REAL']:
+        return 'REAL'
+    elif data_type in ['DATE', 'DATETIME', 'TIMESTAMP']:
+        return 'TEXT'
+    elif data_type in ['BOOLEAN', 'BOOL']:
+        return 'INTEGER'
+    elif data_type in ['BLOB', 'BINARY']:
+        return 'BLOB'
+    else:
+        return 'TEXT'  # Default to TEXT for unknown types
+
+def generate_realistic_sample_data(table_name, columns, data_dict, num_rows=5):
+    """
+    Generate realistic sample data for a table based on the data dictionary using LLM.
+    No fallback mechanisms - will raise errors if LLM generation fails.
+    
+    Args:
+        table_name: Name of the table
+        columns: List of column definitions
+        data_dict: Data dictionary with table and column information
+        num_rows: Number of sample rows to generate
+    
+    Returns:
+        List of sample data rows
+    """
+    # Prepare table description
+    table_description = f"Table containing {table_name} data"
+    if 'tables' in data_dict and table_name in data_dict['tables']:
+        table_dict = data_dict['tables'][table_name]
+        if 'table_description' in table_dict:
+            table_description = table_dict['table_description']
+    
+    # Prepare column information
+    columns_info = []
+    for col in columns:
+        col_name = col["name"]
+        col_type = col["type"]
+        
+        # Get column description if available
+        description = f"{col_name} of type {col_type}"
+        categorical = col_type.upper() in ['TEXT', 'VARCHAR', 'CHAR', 'STRING']
+        constraints = ""
+        synonyms = [col_name.replace("_", " ")]
+        
+        if 'tables' in data_dict and table_name in data_dict['tables']:
+            table_dict = data_dict['tables'][table_name]
+            if 'columns' in table_dict and col_name in table_dict['columns']:
+                col_info = table_dict['columns'][col_name]
+                if 'description' in col_info:
+                    description = col_info['description']
+                if 'constraints' in col_info:
+                    constraints = col_info['constraints']
+                if 'categorical' in col_info:
+                    categorical = col_info['categorical']
+                if 'synonyms' in col_info and col_info['synonyms']:
+                    synonyms = col_info['synonyms']
+        
+        columns_info.append({
+            "name": col_name,
+            "type": col_type,
+            "description": description,
+            "categorical": categorical,
+            "constraints": constraints,
+            "synonyms": synonyms
+        })
+    
+    # Format column info for the prompt
+    columns_text = ""
+    for col_info in columns_info:
+        columns_text += f"Column: {col_info['name']}, Type: {col_info['type']}\n"
+        columns_text += f"Description: {col_info['description']}\n"
+        if col_info['constraints']:
+            columns_text += f"Constraints: {col_info['constraints']}\n"
+        columns_text += f"Categorical: {col_info['categorical']}\n\n"
+    
+    # Create a list of column names for reference
+    column_names = [col['name'] for col in columns]
+    column_types = [col['type'] for col in columns]
+    
+    # Create prompt for GPT with detailed instructions
+    prompt = f"""
+    Generate {num_rows} rows of REALISTIC sample data for a database table with the following structure:
+    
+    Table: {table_name}
+    Description: {table_description}
+    CRITICAL: This table has EXACTLY {len(columns)} columns - no more, no less.
+    
+    Columns (in exact order):
+    {columns_text}
+    
+    Your response MUST be a valid JSON array of arrays, where each inner array represents one row of data.
+    CRITICAL REQUIREMENT: Each row MUST have EXACTLY {len(columns)} values in the EXACT order of columns listed above.
+    
+    Here is the exact list of {len(columns)} column names in order:
+    {column_names}
+    
+    And their corresponding types:
+    {column_types}
+    
+    Example format for this table with {len(columns)} columns:
+    [
+      [value1_for_col1, value2_for_col2, ..., value{len(columns)}_for_col{len(columns)}],
+      [value1_for_col1, value2_for_col2, ..., value{len(columns)}_for_col{len(columns)}],
+      ...
+    ]
+    
+    IMPORTANT GUIDELINES:
+    1. COUNT THE VALUES IN EACH ROW. Every row MUST have EXACTLY {len(columns)} values.
+    2. Generate REALISTIC values that match the column descriptions and constraints
+    3. For dates, use YYYY-MM-DD format (e.g., 2025-05-28)
+    4. For timestamps, use YYYY-MM-DD HH:MM:SS format (e.g., 2025-05-28 14:30:00)
+    5. For numeric columns, provide appropriate numeric values (not strings)
+    6. For text columns, generate meaningful text based on the column name and description
+    7. Ensure data is consistent across rows (e.g., related columns should have related values)
+    8. DO NOT include any explanations or markdown formatting - ONLY the JSON array
+    9. VERIFY that each row has EXACTLY {len(columns)} elements before returning
+    10. DO NOT add extra columns that aren't in the list above
+    """
+    
+    # Call the LLM with a strong instruction to return only JSON
+    response = client.chat.completions.create(
+        model="gpt-4.1-nano",
+        messages=[
+            {"role": "system", "content": "You are a data generation system that ONLY outputs valid JSON arrays. Do not include any explanations, just the JSON array."},
+            {"role": "user", "content": prompt}
+        ],
+        temperature=0.7  # Add some randomness for realistic data
+    )
+    
+    # Get the response content
+    content = response.choices[0].message.content.strip()
+    print(f"Raw LLM response for {table_name}: {content[:100]}...")
+    
+    # Clean up the response to extract just the JSON array
+    # Remove any markdown code block markers
+    content = re.sub(r'^```(?:json)?\s*', '', content)
+    content = re.sub(r'\s*```$', '', content)
+    
+    # Ensure the content is a valid JSON array
+    if not (content.startswith('[') and content.endswith(']')):
+        # If not a complete JSON array, try to extract it
+        json_match = re.search(r'(\[\s*\[.*?\]\s*\])', content, re.DOTALL)
+        if json_match:
+            content = json_match.group(1)
+        else:
+            # Try another pattern that might capture the JSON array
+            json_match = re.search(r'(\[\s*\[.*)', content, re.DOTALL)
+            if json_match:
+                # Try to balance the brackets
+                partial_content = json_match.group(1)
+                open_brackets = partial_content.count('[')
+                close_brackets = partial_content.count(']')
+                # Add missing closing brackets if needed
+                if open_brackets > close_brackets:
+                    partial_content += ']' * (open_brackets - close_brackets)
+                    content = partial_content
+                else:
+                    raise ValueError(f"LLM response is not a valid JSON array: {content[:100]}...")
+            else:
+                raise ValueError(f"LLM response is not a valid JSON array: {content[:100]}...")
+    
+    try:
+        # Parse the JSON
+        sample_data = json.loads(content)
+    except json.JSONDecodeError as e:
+        print(f"JSON decode error: {str(e)}")
+        print(f"Problematic content: {content[:200]}...")
+        raise ValueError(f"Failed to parse JSON: {str(e)}")
+    
+    # Validate the sample data structure
+    if not isinstance(sample_data, list):
+        raise ValueError(f"Response is not a list. Got {type(sample_data).__name__} instead.")
+    
+    if len(sample_data) == 0:
+        raise ValueError("Sample data is empty. No rows were generated.")
+    
+    # Check if all rows are lists
+    non_list_rows = [i for i, row in enumerate(sample_data) if not isinstance(row, list)]
+    if non_list_rows:
+        raise ValueError(f"Rows at indices {non_list_rows} are not lists. Got {[type(sample_data[i]).__name__ for i in non_list_rows]}")
+    
+    # Check if all rows have the correct number of columns
+    wrong_length_rows = [i for i, row in enumerate(sample_data) if len(row) != len(columns)]
+    if wrong_length_rows:
+        print(f"Warning: Rows at indices {wrong_length_rows} don't have {len(columns)} columns. Got {[len(sample_data[i]) for i in wrong_length_rows]}")
+        print("Fixing row lengths...")
+        
+        # Fix the rows with wrong lengths
+        for i in wrong_length_rows:
+            row = sample_data[i]
+            if len(row) > len(columns):
+                # Truncate extra columns
+                print(f"Truncating row {i} from {len(row)} to {len(columns)} columns")
+                sample_data[i] = row[:len(columns)]
+            elif len(row) < len(columns):
+                # Pad with null values for missing columns
+                print(f"Row {i} is too short ({len(row)} columns). This is a critical error.")
+                raise ValueError(f"Row {i} has too few columns: {len(row)} instead of {len(columns)}")
+    
+    # Final validation
+    if not all(len(row) == len(columns) for row in sample_data):
+        # This should never happen after fixing
+        raise ValueError(f"Failed to fix all rows to have exactly {len(columns)} columns")
+    
+    print(f"Successfully validated sample data: {len(sample_data)} rows, each with {len(columns)} columns")
+    
+    # Return the valid sample data
+    return sample_data
+
+# No more fallback functions - we only use LLM for data generation
 
 if __name__ == '__main__':
     app.run(debug=True)
