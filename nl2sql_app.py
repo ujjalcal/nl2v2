@@ -28,12 +28,16 @@ def start_api_server():
     """Start the API server in a separate process."""
     global api_process
     print("Starting API server on http://localhost:5000...")
-    api_process = subprocess.Popen([sys.executable, "nl2sql_api.py"], 
-                                  stdout=subprocess.PIPE,
-                                  stderr=subprocess.STDOUT,
-                                  text=True,
-                                  bufsize=1,
-                                  universal_newlines=True)
+    
+    # Start the API server process
+    api_process = subprocess.Popen(
+        [sys.executable, "nl2sql_api.py"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        universal_newlines=True
+    )
     
     # Print API server output in a non-blocking way
     def read_output():
@@ -47,27 +51,31 @@ def start_api_server():
     max_retries = 30
     for i in range(max_retries):
         try:
-            response = requests.get("http://localhost:5000")
+            response = requests.get("http://localhost:5000/")
             if response.status_code == 200:
                 print("API server is ready!")
                 return True
+            time.sleep(0.5)
         except requests.exceptions.ConnectionError:
-            pass
-        time.sleep(0.5)
+            time.sleep(0.5)
     
     print("Error: API server failed to start properly.")
     return False
 
-def start_ui_server():
-    """Start the UI server in a separate process."""
+def start_minimalist_ui():
+    """Start the minimalist UI server in a separate process."""
     global ui_process
-    print("Starting UI server on http://localhost:5001...")
-    ui_process = subprocess.Popen([sys.executable, "minimalist_ui.py"],
-                                 stdout=subprocess.PIPE,
-                                 stderr=subprocess.STDOUT,
-                                 text=True,
-                                 bufsize=1,
-                                 universal_newlines=True)
+    print("Starting minimalist UI server on http://localhost:5001...")
+    
+    # Start the minimalist UI server process
+    ui_process = subprocess.Popen(
+        [sys.executable, "minimalist_ui.py"],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.STDOUT,
+        text=True,
+        bufsize=1,
+        universal_newlines=True
+    )
     
     # Print UI server output in a non-blocking way
     def read_output():
@@ -83,51 +91,50 @@ def start_ui_server():
         try:
             response = requests.get("http://localhost:5001")
             if response.status_code == 200:
-                print("UI server is ready!")
+                print("Minimalist UI server is ready!")
                 return True
+            time.sleep(0.5)
         except requests.exceptions.ConnectionError:
-            pass
-        time.sleep(0.5)
+            time.sleep(0.5)
     
-    print("Error: UI server failed to start properly.")
-    return False
-
-def open_browser():
-    """Open the browser after ensuring servers are running."""
-    print("Opening browser...")
-    webbrowser.open("http://localhost:5001")
+    print("Warning: UI server might not be fully ready yet, but continuing...")
+    return True
 
 if __name__ == "__main__":
-    print("Starting NL2SQL Tool...")
+    print("Starting NL2SQL Tool with Agentic Architecture...")
     
-    # Start API server
+    # Start the API server
     if not start_api_server():
         print("Failed to start API server. Exiting...")
         sys.exit(1)
     
-    # Start UI server
-    if not start_ui_server():
-        print("Failed to start UI server. Exiting...")
+    # Start the minimalist UI server
+    if not start_minimalist_ui():
+        print("Failed to start minimalist UI server. Exiting...")
         sys.exit(1)
     
     print("NL2SQL Tool is running!")
     print("API server: http://localhost:5000")
-    print("UI server: http://localhost:5001")
+    print("Minimalist UI server: http://localhost:5001")
     
-    # Open browser
-    open_browser()
+    # Open the browser
+    print("Opening browser...")
+    try:
+        webbrowser.open("http://localhost:5001")
+    except Exception as e:
+        print(f"Error opening browser: {str(e)}")
     
     print("Press Ctrl+C to stop the servers.")
     
     try:
-        # Keep the main thread alive
+        # Keep the main process running
         while True:
             # Check if processes are still running
             if api_process.poll() is not None:
                 print("API server stopped unexpectedly. Exiting...")
                 break
             if ui_process.poll() is not None:
-                print("UI server stopped unexpectedly. Exiting...")
+                print("Minimalist UI server stopped unexpectedly. Exiting...")
                 break
             time.sleep(1)
     except KeyboardInterrupt:

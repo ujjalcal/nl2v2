@@ -389,47 +389,32 @@ def clear_cache():
 def clean_yaml_response(content):
     """
     Clean up YAML content by removing code block markers if present.
-    Also handles other common formatting issues in LLM responses.
+    This function only handles removing markdown code block markers and does not
+    attempt to fix or modify the YAML content itself.
     """
     if not content:
         return content
         
+    # Print the raw content for debugging
+    print(f"\n[DEBUG] Raw LLM response before cleaning:\n{content}")
+        
     # Handle code blocks with or without language specifiers
     if '```' in content:
         # Extract content between code block markers
-        lines = content.strip().split('\n')
-        cleaned_lines = []
-        in_code_block = False
-        yaml_block_started = False
-        
-        for line in lines:
-            # Skip code block markers and language specifiers
-            if line.startswith('```'):
-                if not in_code_block:
-                    in_code_block = True
-                    # Check if this is a YAML block
-                    if 'yaml' in line.lower() or 'yml' in line.lower():
-                        yaml_block_started = True
-                else:
-                    in_code_block = False
-                continue
-                
-            # Only include lines from YAML blocks or if not in any code block
-            if yaml_block_started or not in_code_block:
-                cleaned_lines.append(line)
-                
-        content = '\n'.join(cleaned_lines)
+        pattern = r'```(?:yaml|yml)?\s*([\s\S]*?)```'
+        matches = re.findall(pattern, content)
+        if matches:
+            # Just take the first match - we expect only one YAML block
+            content = matches[0].strip()
+        else:
+            # If regex fails, just remove the markers directly
+            content = content.replace('```yaml', '').replace('```yml', '').replace('```', '').strip()
     
-    # Handle any remaining formatting issues
+    # Just trim whitespace, no other modifications
     content = content.strip()
     
-    # If content still doesn't look like valid YAML, try to extract just the YAML part
-    if content and not content.startswith(('file_type:', 'reasoning:', 'sql:')):
-        # Look for common YAML starting patterns
-        for pattern in ['file_type:', 'reasoning:', 'sql:']:
-            if pattern in content:
-                content = content[content.find(pattern):]
-                break
+    # Print the cleaned content for debugging
+    print(f"\n[DEBUG] Cleaned YAML content:\n{content}")
     
     return content
 
@@ -913,16 +898,40 @@ def convert_to_sql(query, table_info, data_dict_path):
     Provide your reasoning step by step, then the final SQL query.
     Format your response as YAML with the following structure:
     ```yaml
-    reasoning: Your step-by-step reasoning
-    sql: The SQL query
+    reasoning: |
+      Your step-by-step reasoning here
+      Use multiple lines with proper indentation
+    sql: |
+      The SQL query here
+      Use proper SQL syntax
     ```
+    
+    CRITICAL INSTRUCTIONS:
+    1. Your response MUST be valid YAML format
+    2. Use the pipe character (|) for multi-line text as shown above
+    3. Maintain proper indentation for multi-line text (2 spaces)
+    4. Do not include any text outside the YAML structure
+    5. Do not include the ```yaml and ``` markers in your actual response
+    6. Both 'reasoning' and 'sql' keys are required
     """
     
     try:
         response = client.chat.completions.create(
             model="gpt-4.1-nano",
+            temperature=0.3,  # Lower temperature for more consistent formatting
             messages=[
-                {"role": "system", "content": "You are an AI assistant that converts natural language queries to SQL. Respond in YAML format."},
+                {"role": "system", "content": """You are an AI assistant that converts natural language queries to SQL. 
+            
+                IMPORTANT: You must respond in valid YAML format with the following structure:
+                reasoning: | 
+                  (multi-line reasoning with proper indentation)
+                sql: |
+                  (SQL query with proper indentation)
+                  
+                Use the pipe character (|) for multi-line strings and maintain proper indentation.
+                Both 'reasoning' and 'sql' keys are required.
+                Do not include any text outside this YAML structure.
+                Do not include markdown code block markers (```yaml) in your response."""},
                 {"role": "user", "content": prompt}
             ]
         )
@@ -930,8 +939,22 @@ def convert_to_sql(query, table_info, data_dict_path):
         # Get the response content and clean it
         content = clean_yaml_response(response.choices[0].message.content)
         
-        # Parse YAML response
+        # Get the raw response for debugging
+        print(f"\n[DEBUG] Raw YAML content to parse:\n{content}")
+        
+        # Parse YAML response with strict validation - no fallbacks
         result = yaml.safe_load(content)
+        
+        # Validate that we have the required structure
+        if not isinstance(result, dict):
+            raise ValueError(f"Expected dictionary response, got {type(result)}")
+            
+        if 'sql' not in result:
+            raise ValueError("Missing 'sql' key in response")
+            
+        if 'reasoning' not in result:
+            raise ValueError("Missing 'reasoning' key in response")
+            
         return result
     
     except Exception as e:
@@ -1418,26 +1441,55 @@ def generate_realistic_sample_data(table_name, columns, data_dict, num_rows=5):
     8. DO NOT include any explanations or markdown formatting - ONLY the JSON array
     9. VERIFY that each row has EXACTLY {len(columns)} elements before returning
     10. DO NOT add extra columns that aren't in the list above
+    11. DOUBLE CHECK your output before returning - count the number of elements in each row
+    12. ENSURE your output is valid JSON - no trailing commas, properly quoted strings, etc.
+    13. RETURN ONLY the JSON array of arrays - no explanations, no markdown formatting
+    
+    Example of a correct response format for a table with 3 columns:
+    [["value1", 123, true], ["value2", 456, false], ["value3", 789, true]]
+    
+    CRITICAL: I will count the number of elements in each row. If any row doesn't have exactly {len(columns)} elements, your response will be rejected.
     """
     
     # Call the LLM with a strong instruction to return only JSON
     response = client.chat.completions.create(
         model="gpt-4.1-nano",
         messages=[
-            {"role": "system", "content": "You are a data generation system that ONLY outputs valid JSON arrays. Do not include any explanations, just the JSON array."},
+            {"role": "system", "content": "You are a data generation system that ONLY outputs valid JSON arrays. Your ONLY task is to generate sample data with EXACTLY the requested number of columns. Count each row to ensure it has the exact number of columns specified. Do not include any explanations, just the JSON array. CRITICAL: Each row MUST have exactly the same number of elements as there are columns in the table schema."},
             {"role": "user", "content": prompt}
         ],
-        temperature=0.7  # Add some randomness for realistic data
+        temperature=0.5  # Lower temperature for more consistent results
     )
     
     # Get the response content
     content = response.choices[0].message.content.strip()
     print(f"Raw LLM response for {table_name}: {content[:100]}...")
     
-    # Clean up the response to extract just the JSON array
-    # Remove any markdown code block markers
-    content = re.sub(r'^```(?:json)?\s*', '', content)
-    content = re.sub(r'\s*```$', '', content)
+    # Clean the YAML response from the LLM to ensure it's properly formatted.
+    # This function only removes code block markers and trims whitespace.
+    # It does not attempt to fix YAML formatting issues - we rely on strict prompting instead.
+    def clean_yaml_response(content):
+        if not content:
+            return content
+        
+        # Remove markdown code block markers if present
+        if '```' in content:
+            # Extract content between code block markers
+            pattern = r'```(?:yaml)?\s*([\s\S]*?)```'
+            matches = re.findall(pattern, content)
+            if matches:
+                content = matches[0].strip()
+            else:
+                # If no matches found with the pattern, just remove all ``` markers
+                content = re.sub(r'```(?:yaml)?', '', content)
+                content = content.replace('```', '').strip()
+        
+        # Print the cleaned content for debugging
+        print(f"\n[DEBUG] Cleaned YAML response:\n{content}")
+        
+        return content
+
+    content = clean_yaml_response(content)
     
     # Ensure the content is a valid JSON array
     if not (content.startswith('[') and content.endswith(']')):
