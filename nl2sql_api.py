@@ -397,10 +397,12 @@ def process_query():
                     rows = [[row.get(col) for col in columns] for row in result['results']]
                     result['columns'] = columns
                     result['rows'] = rows
+                    result['data'] = result['results']
                 else:
                     # No results
                     result['columns'] = []
                     result['rows'] = []
+                    result['data'] = []
                 # Remove the original results to avoid duplication
                 del result['results']
             # Handle dictionary format (column name -> list of values)
@@ -414,10 +416,12 @@ def process_query():
                         rows.append(row)
                     result['columns'] = columns
                     result['rows'] = rows
+                    result['data'] = [{columns[i]: row[i] for i in range(len(columns))} for row in rows]
                 else:
                     # Empty results
                     result['columns'] = columns
                     result['rows'] = []
+                    result['data'] = []
                 del result['results']
         
         # Ensure success flag is set
