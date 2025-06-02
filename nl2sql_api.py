@@ -55,6 +55,13 @@ class NpEncoder(json.JSONEncoder):
 app = Flask(__name__)
 CORS(app)
 
+# Global variables
+global_events = []
+current_file_id = None
+current_workflow_state = 'IDLE'
+query_processor = None
+master_agent = None
+
 # Initialize the API server
 def initialize():
     """Initialize the API server."""
@@ -78,16 +85,6 @@ def initialize():
 
 # Initialize on startup
 initialize()
-
-# Simple global events list for tracking agent activities
-global_events = []
-
-# Global variables
-global_events = []
-current_file_id = None
-current_workflow_state = 'IDLE'
-query_processor = None
-master_agent = None
 
 def agent_activity(agent_name, workflow_state, message, details=None):
     """Record real agent activity to the global events list."""
@@ -466,12 +463,40 @@ def get_goals():
         })
     
     try:
-        goals = master_agent.get_all_goals()
+        # Get goals from master agent
+        raw_goals = master_agent.get_all_goals()
+        
+        # Transform goals to match UI expectations
+        ui_goals = []
+        for goal in raw_goals:
+            # Map internal state to UI status
+            status = goal.get('state', 'pending')
+            if status == 'created':
+                status = 'pending'
+            elif status == 'in_progress':
+                status = 'in progress'
+            elif status == 'completed':
+                status = 'completed'
+            elif status == 'failed':
+                status = 'failed'
+            else:
+                status = 'pending'
+            
+            # Create UI-compatible goal object
+            ui_goal = {
+                'id': goal.get('id', ''),
+                'name': goal.get('title', ''),
+                'description': goal.get('description', ''),
+                'status': status
+            }
+            ui_goals.append(ui_goal)
+        
         return jsonify({
             'success': True,
-            'goals': goals
+            'goals': ui_goals
         })
     except Exception as e:
+        print(f"Error getting goals: {str(e)}")
         return jsonify({
             'success': False,
             'error': str(e)

@@ -46,23 +46,30 @@ def main():
     parser.add_argument('--use-master-agent', action='store_true', help='Enable the master agent architecture')
     args = parser.parse_args()
 
-    # Set environment variables
+    # Set environment variables for ports
     os.environ['API_PORT'] = str(args.port)
     os.environ['UI_PORT'] = str(args.ui_port)
-    os.environ['USE_MASTER_AGENT'] = 'true' if args.use_master_agent else 'false'
+    
+    # Only set USE_MASTER_AGENT if not already set in .env file
+    # This ensures .env file has priority over command line
+    if 'USE_MASTER_AGENT' not in os.environ:
+        os.environ['USE_MASTER_AGENT'] = 'true' if args.use_master_agent else 'false'
+    
+    # Get the actual value that will be used
+    use_master_agent = os.environ.get('USE_MASTER_AGENT', 'false').lower() == 'true'
 
     # Print configuration
     print(f"Configuration:")
     print(f"  API Port: {args.port}")
     print(f"  UI Port: {args.ui_port}")
-    print(f"  Master Agent: {'Enabled' if args.use_master_agent else 'Disabled'}")
+    print(f"  Master Agent: {'Enabled' if use_master_agent else 'Disabled'} (from .env file)")
 
     # Create directories
     os.makedirs('temp', exist_ok=True)
     os.makedirs('test', exist_ok=True)
 
     # Create goal templates directory if using master agent
-    if args.use_master_agent:
+    if use_master_agent:
         os.makedirs('goal_templates', exist_ok=True)
 
         # Create default goal templates if they don't exist
