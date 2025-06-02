@@ -5,3 +5,7 @@ flask==2.3.3
 flask-cors==4.0.0
 pandas==2.0.3
 werkzeug==2.3.7
+numpy==1.24.3
+sqlite3-api==0.1.0
+streamlit==1.25.0
+requests==2.31.0

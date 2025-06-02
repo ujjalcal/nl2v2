@@ -439,18 +439,7 @@ Available tables and columns:
         
         # Call LLM
         content = self._call_llm(system_prompt, user_message, max_tokens=2000)
-        result = self._parse_yaml_response(content, {
-            'execution_steps': [{
-                'id': 'sql_main',
-                'query_id': 'main',
-                'execution_type': 'sql',
-                'description': 'Execute the query using SQL',
-                'depends_on': [],
-                'expected_output': 'Query results'
-            }],
-            'execution_order': ['sql_main'],
-            'final_result_step': 'sql_main'
-        })
+        result = self._parse_yaml_response(content)
         
         agent_activity(self.name, 'COMPLETED', 'Execution plan created',
                       {'step_count': len(result.get('execution_steps', []))})
@@ -501,13 +490,7 @@ Available tables and columns:
         
         # Call LLM
         content = self._call_llm(system_prompt, user_message, max_tokens=2000)
-        result = self._parse_yaml_response(content, {
-            'sql': f"SELECT * FROM main_table LIMIT 10;",
-            'tables_used': [],
-            'columns_used': [],
-            'reasoning': 'Fallback to simple query',
-            'confidence': 0
-        })
+        result = self._parse_yaml_response(content)
         
         # Clean the SQL query
         result['sql'] = clean_sql_query(result.get('sql', ''))
@@ -611,22 +594,7 @@ SQLite database path: {db_path}"""
         
         # Call LLM
         content = self._call_llm(system_prompt, user_message, max_tokens=2500)
-        result = self._parse_yaml_response(content, {
-            'code': f"""import pandas as pd
-import sqlite3
-
-def execute():
-    conn = sqlite3.connect('{db_path}')
-    df = pd.read_sql_query("SELECT * FROM main_table LIMIT 10", conn)
-    conn.close()
-    return df
-
-result = execute()
-""",
-            'description': 'Simple fallback code to query the database',
-            'expected_output_type': 'dataframe',
-            'libraries_used': ['pandas', 'sqlite3']
-        })
+        result = self._parse_yaml_response(content)
         
         agent_activity(self.name, 'COMPLETED', f'Code generated for step {step["id"]}',
                       {'libraries_used': result.get('libraries_used', [])})
@@ -796,12 +764,7 @@ Generate a SQL query to answer this question."""
         
         # Call LLM
         content = self._call_llm(system_prompt, user_message)
-        result = self._parse_yaml_response(content, {
-            'sql': '',
-            'explanation': 'Could not generate SQL',
-            'tables_used': [],
-            'confidence': 'low'
-        })
+        result = self._parse_yaml_response(content)
         
         # Clean the SQL query
         if 'sql' in result and result['sql']:
@@ -916,12 +879,7 @@ Execution results:
         
         # Call LLM
         content = self._call_llm(system_prompt, user_message)
-        combination_plan = self._parse_yaml_response(content, {
-            'combination_strategy': 'sequential',
-            'primary_result_id': list(execution_results.keys())[0],
-            'presentation_order': list(execution_results.keys()),
-            'summary': 'Combined results from multiple steps'
-        })
+        combination_plan = self._parse_yaml_response(content)
         
         # Use the combination plan to structure the results
         combined_result = {

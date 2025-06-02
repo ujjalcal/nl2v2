@@ -8,21 +8,33 @@ import xmltodict
 import shutil
 import re
 import uuid
+import os
 from werkzeug.utils import secure_filename
 from flask import Flask, request, jsonify, Response, stream_with_context
 from flask_cors import CORS
 from queue import Queue
 import threading
 from dotenv import load_dotenv
-import openai
 from openai import OpenAI
 import time
+
+# Import the master agent and query processor
+from master_agent import MasterAgent
+from agentic_processor import AgenticQueryProcessor
 
 # Load environment variables
 load_dotenv()
 
+# Debug API key (show only first 10 chars for security)
+api_key = os.environ.get("OPENAI_API_KEY")
+if api_key:
+    masked_key = api_key[:10] + "..." if len(api_key) > 10 else "None"
+    print(f"[API] API Key loaded (first 10 chars): {masked_key}")
+else:
+    print("[API] WARNING: No OpenAI API key found in environment variables")
+
 # Initialize OpenAI client
-client = OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+client = OpenAI(api_key=api_key)
 
 # Create temp directory if it doesn't exist
 os.makedirs('temp', exist_ok=True)
@@ -43,12 +55,39 @@ class NpEncoder(json.JSONEncoder):
 app = Flask(__name__)
 CORS(app)
 
+# Initialize the API server
+def initialize():
+    """Initialize the API server."""
+    global query_processor, master_agent
+    
+    # Create temp directory if it doesn't exist
+    os.makedirs('temp', exist_ok=True)
+    
+    # Initialize query processor
+    query_processor = AgenticQueryProcessor()
+    
+    # Check if master agent is enabled via environment variable
+    use_master_agent = os.environ.get('USE_MASTER_AGENT', 'false').lower() == 'true'
+    
+    # Initialize master agent if enabled
+    if use_master_agent:
+        master_agent = MasterAgent()
+        print("Master agent initialized and ready")
+    else:
+        print("Master agent disabled, using legacy mode")
+
+# Initialize on startup
+initialize()
+
 # Simple global events list for tracking agent activities
 global_events = []
 
-# Agent activity tracking
+# Global variables
+global_events = []
 current_file_id = None
 current_workflow_state = 'IDLE'
+query_processor = None
+master_agent = None
 
 def agent_activity(agent_name, workflow_state, message, details=None):
     """Record real agent activity to the global events list."""
@@ -234,6 +273,41 @@ def upload_file():
         # Final progress update
         agent_activity('WorkflowOrchestratorAgent', 'DONE', 'Processing complete - Ready for queries')
         
+        # Initialize or update the query processor with the new file paths
+        global query_processor
+        if query_processor is None:
+            query_processor = AgenticQueryProcessor()
+            agent_activity('API', 'INIT', 'Initializing new query processor')
+        else:
+            agent_activity('API', 'UPDATE', 'Updating existing query processor with new file paths')
+        
+        # Set the database and data dictionary paths for the query processor
+        query_processor.db_path = db_path
+        query_processor.data_dict_path = data_dict_path
+        
+        # Verify database connection was established
+        if not query_processor.db_conn:
+            agent_activity('API', 'CONNECTING', 'Connecting to database')
+            query_processor._connect_to_db()
+            if not query_processor.db_conn:
+                agent_activity('API', 'ERROR', f'Failed to connect to database at {db_path}')
+                raise ValueError(f"Failed to connect to database at {db_path}. Please check if the file exists and is valid.")
+            else:
+                agent_activity('API', 'CONNECTED', f'Successfully connected to database with {len(query_processor.db_conn.execute("SELECT name FROM sqlite_master WHERE type=\'table\'").fetchall())} tables')
+        
+        # Load data dictionary
+        try:
+            if os.path.exists(data_dict_path):
+                agent_activity('API', 'LOADING', 'Loading data dictionary')
+                query_processor._load_data_dictionary(data_dict_path)
+                agent_activity('API', 'LOADED', 'Data dictionary loaded successfully')
+            else:
+                agent_activity('API', 'WARNING', f'Data dictionary file not found at {data_dict_path}')
+        except Exception as dict_error:
+            agent_activity('API', 'ERROR', f'Error loading data dictionary: {str(dict_error)}')
+            print(f"Warning: Error loading data dictionary: {str(dict_error)}")
+            # Continue despite dictionary error - we can still query the database
+        
         # Return the analysis result and paths
         response = {
             'success': True,
@@ -255,108 +329,211 @@ def upload_file():
 
 @app.route('/api/query', methods=['POST'])
 def process_query():
-    """
-    Process a natural language query and convert it to SQL.
-    Returns a JSON response with the query results.
-    """
-    data = request.json
-    
-    if not data or 'query' not in data:
-        response = {'error': 'No query provided'}
-        return jsonify(response), 400
-    
-    query = data['query']
-    db_path = data.get('db_path')
-    data_dict_path = data.get('data_dict_path')
-    
-    if not db_path or not data_dict_path:
-        response = {'error': 'Database path or data dictionary path not provided'}
-        return jsonify(response), 400
-    
+    """Process a natural language query."""
     try:
-        # Get table information from the database
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
+        global query_processor, master_agent
+        data = request.json
+        nl_query = data.get('query', '')
         
-        # Get all table names
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
-        tables = cursor.fetchall()
-        table_info = {}
+        # Log query
+        print(f"Processing query: {nl_query}")
+        agent_activity('API', 'QUERY_RECEIVED', f"Query received: {nl_query}")
         
-        for table in tables:
-            table_name = table[0]
-            cursor.execute(f"PRAGMA table_info({table_name});")
-            columns = cursor.fetchall()
-            table_info[table_name] = [col[1] for col in columns]
+        # Check if master agent is enabled via environment variable
+        use_master_agent = os.environ.get('USE_MASTER_AGENT', 'false').lower() == 'true'
         
-        # Convert query to SQL using GPT-4.1 Nano
-        sql_result = convert_to_sql(query, table_info, data_dict_path)
-        
-        # Execute the SQL query
-        if sql_result.get('sql'):
-            try:
-                # Get the SQL query
-                sql_query = sql_result['sql']
-                
-                # Clean the SQL query to remove comments and handle CTEs properly
-                sql_query = clean_sql_query(sql_query)
-                
-                # Fix table names in the query if needed
-                for table_name in table_info.keys():
-                    # Clean up table name to ensure it's valid SQL
-                    clean_table_name = table_name.split('.')[0]  # Remove file extension if present
-                    # Remove timestamp prefix if present (like 1748327704_)
-                    if '_' in clean_table_name and clean_table_name.split('_')[0].isdigit():
-                        clean_table_name = '_'.join(clean_table_name.split('_')[1:])
-                    
-                    # Replace the original table name with the cleaned one in the query
-                    sql_query = sql_query.replace(f'"{table_name}"', f'"{clean_table_name}"')
-                    sql_query = sql_query.replace(f'`{table_name}`', f'`{clean_table_name}`')
-                    sql_query = sql_query.replace(f'[{table_name}]', f'[{clean_table_name}]')
-                    sql_query = sql_query.replace(f' {table_name} ', f' {clean_table_name} ')
-                
-                # Execute the query
-                df = pd.read_sql_query(sql_query, conn)
-                records = df.to_dict('records')
-                columns = df.columns.tolist()
-                
-                # Generate a summary of the results using the summarizer agent
-                summary = generate_result_summary(query, sql_result['sql'], records, columns)
-                
-                response = {
-                    'success': True,
-                    'query': query,
-                    'sql': sql_result['sql'],
-                    'reasoning': sql_result.get('reasoning', ''),
-                    'columns': columns,
-                    'data': records,
-                    'summary': summary
-                }
-            except Exception as e:
-                response = {
-                    'success': False,
-                    'query': query,
-                    'sql': sql_result['sql'],
-                    'reasoning': sql_result.get('reasoning', ''),
-                    'error': f"Error executing SQL: {str(e)}"
-                }
-        else:
-            response = {
+        # Verify query processor is initialized
+        if not use_master_agent and (query_processor is None or not hasattr(query_processor, 'db_path') or not query_processor.db_path):
+            agent_activity('API', 'ERROR', "Query processor not initialized or database not set")
+            return jsonify({
                 'success': False,
-                'query': query,
-                'error': sql_result.get('error', 'Failed to convert query to SQL')
+                'error': "Query processor not initialized. Please upload a file first."
+            })
+        
+        # Process the query using master agent if enabled, otherwise use legacy processor
+        if use_master_agent and master_agent is not None:
+            # Create a goal for processing the query
+            goal_id = master_agent.create_goal('process_query', {'query': nl_query})
+            agent_activity('MasterAgent', 'PROCESSING', f"Processing query via goal {goal_id}")
+            
+            # Execute the goal
+            result = master_agent.execute_goal(goal_id)
+            
+            # Add goal_id to the result
+            result['goal_id'] = goal_id
+        else:
+            # Use legacy query processor
+            agent_activity('AgenticQueryProcessor', 'PROCESSING', "Processing query via agentic processor")
+            try:
+                result = query_processor.process_query(nl_query)
+                agent_activity('AgenticQueryProcessor', 'PROCESSED', "Query processed by agentic processor")
+            except Exception as processor_error:
+                agent_activity('AgenticQueryProcessor', 'ERROR', f"Error in query processor: {str(processor_error)}")
+                raise processor_error
+        
+        # Ensure result is a dictionary
+        if not isinstance(result, dict):
+            result = {
+                'success': True,
+                'message': str(result),
+                'type': 'generic'
             }
         
-        conn.close()
-        return jsonify(response)
+        # Add SQL query to response if available
+        if 'execution_plan' in result and result['execution_plan']:
+            for step in result['execution_plan']:
+                if step.get('action') == 'execute_sql' and 'query' in step:
+                    result['sql'] = step['query']
+                    break
+        
+        # Handle results based on format
+        if 'results' in result:
+            # If results is a list of dictionaries (common SQLite result format)
+            if isinstance(result['results'], list) and len(result['results']) > 0 and isinstance(result['results'][0], dict):
+                # Extract column names from the first result
+                if result['results']:
+                    columns = list(result['results'][0].keys())
+                    # Convert to rows format expected by frontend
+                    rows = [[row.get(col) for col in columns] for row in result['results']]
+                    result['columns'] = columns
+                    result['rows'] = rows
+                else:
+                    # No results
+                    result['columns'] = []
+                    result['rows'] = []
+                # Remove the original results to avoid duplication
+                del result['results']
+            # Handle dictionary format (column name -> list of values)
+            elif isinstance(result['results'], dict):
+                columns = list(result['results'].keys())
+                if columns and len(result['results'][columns[0]]) > 0:
+                    # Transpose the data from column-oriented to row-oriented
+                    rows = []
+                    for i in range(len(result['results'][columns[0]])):
+                        row = [result['results'][col][i] if i < len(result['results'][col]) else None for col in columns]
+                        rows.append(row)
+                    result['columns'] = columns
+                    result['rows'] = rows
+                else:
+                    # Empty results
+                    result['columns'] = columns
+                    result['rows'] = []
+                del result['results']
+        
+        # Ensure success flag is set
+        if 'success' not in result:
+            result['success'] = True
+        
+        # Log success
+        agent_activity('API', 'QUERY_PROCESSED', "Query processed successfully")
+        
+        return jsonify(result)
     
     except Exception as e:
-        response = {
+        # Log error
+        error_message = str(e)
+        print(f"Error processing query: {error_message}")
+        agent_activity('API', 'ERROR', f"Error processing query: {error_message}")
+        
+        # Include stack trace in development
+        import traceback
+        stack_trace = traceback.format_exc()
+        print(f"Stack trace: {stack_trace}")
+        
+        return jsonify({
             'success': False,
-            'query': query,
+            'error': error_message,
+            'details': "Please make sure you've uploaded a file before submitting queries."
+        })
+
+# Add new API endpoints for goal management
+@app.route('/api/goals', methods=['GET'])
+def get_goals():
+    """Get all goals."""
+    global master_agent
+    
+    # Check if master agent is enabled via environment variable
+    use_master_agent = os.environ.get('USE_MASTER_AGENT', 'false').lower() == 'true'
+    
+    if not use_master_agent or master_agent is None:
+        return jsonify({
+            'success': False,
+            'error': 'Master agent is not enabled'
+        })
+    
+    try:
+        goals = master_agent.get_all_goals()
+        return jsonify({
+            'success': True,
+            'goals': goals
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
             'error': str(e)
-        }
-        return jsonify(response), 500
+        })
+
+@app.route('/api/goals/<goal_id>', methods=['GET'])
+def get_goal(goal_id):
+    """Get a specific goal by ID."""
+    global master_agent
+    
+    # Check if master agent is enabled via environment variable
+    use_master_agent = os.environ.get('USE_MASTER_AGENT', 'false').lower() == 'true'
+    
+    if not use_master_agent or master_agent is None:
+        return jsonify({
+            'success': False,
+            'error': 'Master agent is not enabled'
+        })
+    
+    try:
+        goal = master_agent.goal_tracker.get_goal(goal_id)
+        return jsonify({
+            'success': True,
+            'goal': goal
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        })
+
+# This duplicate execute_goal endpoint was removed to fix the route conflict
+
+@app.route('/api/goals', methods=['POST'])
+def create_goal():
+    """Create a new goal."""
+    if not use_master_agent:
+        return jsonify({
+            'success': False,
+            'error': 'Master agent is not enabled'
+        })
+    
+    try:
+        data = request.json
+        template_name = data.get('template')
+        parameters = data.get('parameters', {})
+        
+        if not template_name:
+            return jsonify({
+                'success': False,
+                'error': 'No template name provided'
+            })
+        
+        goal_id = master_agent.create_goal(template_name, parameters)
+        return jsonify({
+            'success': True,
+            'goal_id': goal_id
+        })
+    except Exception as e:
+        return jsonify({
+            'success': False,
+            'error': str(e)
+        })
+
+# The duplicate execute_goal endpoint was removed to fix the route conflict
+# This function was previously defined at line 455-479
 
 @app.route('/api/clear_cache', methods=['POST'])
 def clear_cache():

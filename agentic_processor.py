@@ -3,12 +3,21 @@ import json
 import re
 import pandas as pd
 import sqlite3
+import os
 from typing import Dict, List, Any, Optional, Tuple, Union
-import openai
+from openai import OpenAI
 from dotenv import load_dotenv
 
 # Load environment variables
 load_dotenv()
+
+# Debug API key (masked for security)
+api_key = os.environ.get("OPENAI_API_KEY")
+if api_key:
+    masked_key = api_key[:10] + "..." if len(api_key) > 10 else "None"
+    print(f"[AgenticProcessor] API Key loaded (first 10 chars): {masked_key}")
+else:
+    print("[AgenticProcessor] WARNING: No OpenAI API key found in environment variables")
 
 class AgenticQueryProcessor:
     """
@@ -24,9 +33,20 @@ class AgenticQueryProcessor:
             data_dict_path: Optional path to a data dictionary JSON file
             db_path: Optional path to a SQLite database file
         """
-        self.client = openai.OpenAI(api_key=os.getenv("OPENAI_API_KEY"))
+        # Get API key from environment
+        api_key = os.environ.get("OPENAI_API_KEY")
+        if not api_key:
+            print("WARNING: OpenAI API key not found. NL2SQL functionality will not work.")
+        else:
+            masked_key = api_key[:10] + "..." if len(api_key) > 10 else "None"
+            print(f"[AgenticProcessor.__init__] Using API Key (first 10 chars): {masked_key}")
+            
+        # Initialize OpenAI client with explicit API key
+        self.client = OpenAI(api_key=api_key)
+        
+        self._data_dict_path = data_dict_path
+        self._db_path = db_path
         self.data_dict = self._load_data_dictionary(data_dict_path) if data_dict_path else None
-        self.db_path = db_path
         self.db_conn = None
         self.execution_plan = []
         self.execution_results = []
@@ -36,9 +56,70 @@ class AgenticQueryProcessor:
         if self.db_path:
             self._connect_to_db()
     
+    @property
+    def data_dict_path(self):
+        return self._data_dict_path
+    
+    @data_dict_path.setter
+    def data_dict_path(self, path):
+        self._data_dict_path = path
+        if path:
+            self.data_dict = self._load_data_dictionary(path)
+    
+    @property
+    def db_path(self):
+        return self._db_path
+    
+    @db_path.setter
+    def db_path(self, path):
+        self._db_path = path
+        if path:
+            # Close existing connection if any
+            if self.db_conn:
+                try:
+                    self.db_conn.close()
+                except:
+                    pass
+            # Connect to the new database
+            self._connect_to_db()
+    
+    def _connect_to_db(self) -> None:
+        """Connect to the SQLite database with improved error handling."""
+        if not self.db_path:
+            print("No database path specified. Please upload a file first.")
+            self.db_conn = None
+            return
+            
+        # Check if the database file exists
+        if not os.path.exists(self.db_path):
+            print(f"Database file not found at path: {self.db_path}")
+            self.db_conn = None
+            return
+            
+        try:
+            # Use check_same_thread=False to avoid thread safety issues with Streamlit
+            self.db_conn = sqlite3.connect(self.db_path, check_same_thread=False)
+            self.db_conn.row_factory = sqlite3.Row
+            
+            # Test the connection by executing a simple query
+            cursor = self.db_conn.cursor()
+            cursor.execute("SELECT name FROM sqlite_master WHERE type='table'")
+            tables = cursor.fetchall()
+            print(f"Successfully connected to database with {len(tables)} tables")
+        except sqlite3.Error as e:
+            print(f"SQLite error connecting to database: {str(e)}")
+            self.db_conn = None
+        except Exception as e:
+            print(f"Unexpected error connecting to database: {str(e)}")
+            self.db_conn = None
+    
     def _load_data_dictionary(self, path: str) -> Dict[str, Any]:
         """Load a data dictionary from a JSON or YAML file."""
         try:
+            if not path or not os.path.exists(path):
+                print(f"Data dictionary file not found: {path}")
+                return {}
+                
             file_extension = path.split('.')[-1].lower()
             with open(path, 'r') as f:
                 if file_extension in ['yaml', 'yml']:
@@ -49,16 +130,6 @@ class AgenticQueryProcessor:
         except Exception as e:
             print(f"Error loading data dictionary: {str(e)}")
             return {}
-    
-    def _connect_to_db(self) -> None:
-        """Connect to the SQLite database."""
-        try:
-            # Use check_same_thread=False to avoid thread safety issues with Streamlit
-            self.db_conn = sqlite3.connect(self.db_path, check_same_thread=False)
-            self.db_conn.row_factory = sqlite3.Row
-        except Exception as e:
-            print(f"Error connecting to database: {str(e)}")
-            self.db_conn = None
     
     def process_query(self, query: str) -> Dict[str, Any]:
         """
@@ -500,9 +571,11 @@ class AgenticQueryProcessor:
         1. The query must use valid SQLite syntax
         2. Do not use functions not supported by SQLite (like MEDIAN)
         3. If the query requires data from multiple tables, use appropriate JOINs with the correct join conditions
-        4. Use proper table aliases in joins (e.g., SELECT a.column FROM table1 a JOIN table2 b ON a.id = b.id)
-        5. Make sure all column references in JOINs are fully qualified with table aliases
-        6. Return ONLY the SQL query with no additional text or explanation
+        4. Use the EXACT table names as provided: {', '.join(tables)}
+        5. DO NOT use aliases like 'h' or 't' unless necessary for joins
+        6. When using aliases, make sure they are clear and descriptive (e.g., use '{tables[0]}' instead of 'h')
+        7. Make sure all column references in JOINs are fully qualified with table names or aliases
+        8. Return ONLY the SQL query with no additional text or explanation
         
         {join_analysis.get('query_guidance', '') if join_analysis else ''}
         """
@@ -521,7 +594,7 @@ class AgenticQueryProcessor:
             messages=[
                 {"role": "system", "content": """You are an expert SQL query generator specializing in complex joins and multi-table queries.
                 Your strength is understanding database schemas and creating efficient, accurate SQL queries with proper join conditions.
-                You always use table aliases in joins and fully qualify column references. You understand SQLite's syntax limitations.
+                You always use the EXACT table names as provided. DO NOT use aliases like 'h' or 't' unless necessary for joins.
                 When multiple tables are involved, you carefully analyze the relationships between tables to create correct join conditions."""},
                 {"role": "user", "content": prompt}
             ],
@@ -545,17 +618,23 @@ class AgenticQueryProcessor:
     
     def _execute_sql(self, sql_query: str) -> List[Dict[str, Any]]:
         """
-        Execute a SQL query and return the results.
+        Execute a SQL query and return the results with enhanced error handling.
         
-{{ ... }}
         Args:
             sql_query: The SQL query to execute
             
         Returns:
             List of dictionaries containing the results
         """
+        # Check if database connection is established
         if not self.db_conn:
-            raise ValueError("Database connection not established")
+            error_msg = "Database connection not established. Please upload a file first."
+            self._add_reasoning_step("Database Error", error_msg)
+            print(f"Database connection error: {error_msg}")
+            raise ValueError(error_msg)
+        
+        # Clean the SQL query to remove any problematic characters or formatting
+        sql_query = sql_query.strip()
         
         # Add reasoning step about the SQL query being executed
         self._add_reasoning_step(
@@ -563,13 +642,54 @@ class AgenticQueryProcessor:
             f"Executing SQL query:\n```sql\n{sql_query}\n```"
         )
         
-        # Check if the query contains a JOIN clause
+        # Debug information
+        print(f"Executing SQL query: {sql_query}")
+        print(f"Database path: {self.db_path}")
+        
+        # Check if the query contains specific patterns
         has_join = re.search(r'\bjoin\b', sql_query, re.IGNORECASE) is not None
+        has_race = re.search(r'\brace\b|\bethnic', sql_query, re.IGNORECASE) is not None
+        has_gender = re.search(r'\bgender\b|\bsex\b', sql_query, re.IGNORECASE) is not None
+        has_aggregation = re.search(r'\bcount\b|\bsum\b|\bavg\b|\bmax\b|\bmin\b', sql_query, re.IGNORECASE) is not None
+        
+        # Add specific reasoning for demographic analysis
+        if has_race or has_gender:
+            self._add_reasoning_step(
+                "Demographic Analysis",
+                "This query involves demographic analysis. Ensuring proper handling of demographic data."
+            )
         
         try:
+            # Verify database connection is still valid
+            if not self.db_conn:
+                self._connect_to_db()
+                if not self.db_conn:
+                    raise ValueError("Failed to reconnect to database")
+            
             cursor = self.db_conn.cursor()
             cursor.execute(sql_query)
-            results = [dict(row) for row in cursor.fetchall()]
+            
+            # Fetch results and convert to list of dictionaries
+            rows = cursor.fetchall()
+            print(f"Query returned {len(rows)} rows")
+            
+            if not rows:
+                self._add_reasoning_step("SQL Results", "Query returned no results.")
+                return []
+            
+            # Get column names from cursor description
+            column_names = [description[0] for description in cursor.description]
+            print(f"Column names: {column_names}")
+            
+            # Convert rows to dictionaries
+            results = []
+            for row in rows:
+                row_dict = {column_names[i]: value for i, value in enumerate(row)}
+                results.append(row_dict)
+            
+            # Print first row for debugging
+            if results:
+                print(f"First row of results: {results[0]}")
             
             # Add reasoning about the results
             if results:
@@ -577,18 +697,50 @@ class AgenticQueryProcessor:
                 sample_result = results[0] if results else {}
                 columns = list(sample_result.keys())
                 
-                self._add_reasoning_step(
-                    "SQL Results",
-                    f"Query returned {result_count} results with columns: {', '.join(columns)}\n" +
-                    ("This query used JOINs to combine data from multiple tables." if has_join else "")
-                )
-            else:
-                self._add_reasoning_step(
-                    "SQL Results",
-                    "Query returned no results."
-                )
+                # Build detailed reasoning about the results
+                reasoning = f"Query returned {result_count} results with columns: {', '.join(columns)}\n"
                 
+                # Add insights based on query type
+                if has_join:
+                    reasoning += "This query used JOINs to combine data from multiple tables.\n"
+                if has_aggregation:
+                    reasoning += "This query used aggregation functions to summarize data.\n"
+                if has_race:
+                    reasoning += "This query analyzed race/ethnicity demographics.\n"
+                if has_gender:
+                    reasoning += "This query analyzed gender demographics.\n"
+                
+                self._add_reasoning_step("SQL Results", reasoning)
+            
             return results
+            
+        except sqlite3.OperationalError as e:
+            error_msg = str(e)
+            detailed_error = f"SQLite operational error: {error_msg}."
+            
+            # Add more specific error details based on error message
+            if "no such table" in error_msg.lower():
+                detailed_error += " The table specified in the query does not exist in the database."
+            elif "no such column" in error_msg.lower():
+                detailed_error += " The column name in the query does not exist in the table."
+            elif "syntax error" in error_msg.lower():
+                detailed_error += " There is a syntax error in the SQL query."
+            else:
+                detailed_error += " This may be due to an invalid column name, table name, or syntax error."
+            
+            self._add_reasoning_step("SQL Error", detailed_error)
+            print(f"SQLite operational error: {error_msg}")
+            raise ValueError(f"SQL execution error: {error_msg}. {detailed_error}")
+            
+        except sqlite3.Error as e:
+            error_msg = str(e)
+            self._add_reasoning_step(
+                "SQLite Error",
+                f"SQLite error: {error_msg}. This is a database-specific error."
+            )
+            print(f"SQLite error: {error_msg}")
+            raise ValueError(f"SQLite error: {error_msg}")
+            
         except Exception as e:
             error_msg = str(e)
             self._add_reasoning_step(
@@ -596,12 +748,14 @@ class AgenticQueryProcessor:
                 f"Error executing SQL query: {error_msg}"
             )
             print(f"Error executing SQL: {error_msg}")
-            raise
+            raise ValueError(f"Error executing SQL query: {error_msg}")
+
     
     def _generate_python_code(self, query: str) -> str:
         """
         Generate Python code to answer a query.
         
+{{ ... }}
         Args:
             query: The natural language query
             
@@ -960,12 +1114,10 @@ class AgenticQueryProcessor:
         If multiple tables exist, returns the first one.
         
         Returns:
-            Table name as a string, or 'data' as fallback
+            Table name as a string
         """
         tables = self._get_all_tables()
-        if tables:
-            return tables[0]
-        return "hmda_data"
+        return tables[0]
     
     def _get_all_tables(self) -> List[str]:
         """
@@ -975,20 +1127,26 @@ class AgenticQueryProcessor:
             List of table names as strings
         """
         if not self.db_conn:
-            return ["data"]
-            
-        try:
-            cursor = self.db_conn.cursor()
-            cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
-            tables = cursor.fetchall()
-            
-            # Filter out system tables
-            table_names = [table[0] for table in tables if table[0] != 'sqlite_sequence']
-            
-            return table_names if table_names else ["hmda_data"]
-        except Exception as e:
-            print(f"Error getting table names: {str(e)}")
-            return ["hmda_data"]
+            print("Error: No database connection when getting tables")
+            raise ValueError("No database connection established")
+        
+        cursor = self.db_conn.cursor()
+        cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
+        tables = cursor.fetchall()
+        
+        # Print raw table data for debugging
+        print(f"Raw table data from database: {tables}")
+        
+        # Filter out system tables
+        table_names = [row[0] for row in tables if row[0] != 'sqlite_sequence']
+        
+        print(f"Found tables in database: {table_names}")
+        
+        if not table_names:
+            print("No tables found in database")
+            raise ValueError("No tables found in database")
+        
+        return table_names
         
     def _get_table_schema(self, table_name: str) -> Dict[str, str]:
         """

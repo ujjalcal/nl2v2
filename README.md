@@ -1,8 +1,8 @@
-Thanks for the clarification — here's the fully refined, design-focused architecture based on your constraints:
+# NL2SQL: Agentic Natural Language to SQL Query System
 
----
+This application demonstrates a fully agentic architecture for converting natural language questions into SQL queries. It features specialized agents for file classification, data profiling, dictionary synthesis, query classification, and query processing.
 
-# 🧱 Refined Architecture: Dynamic Agentic System with Goal-Oriented Execution
+## 🧱 Architecture: Dynamic Agentic System with Goal-Oriented Execution
 
 This architecture supports **dynamic execution**, **LLM-driven planning**, and **viewable, goal-grouped explainability** while remaining **in-memory, stateless, and demo-ready**.
 
@@ -18,6 +18,69 @@ This architecture supports **dynamic execution**, **LLM-driven planning**, and *
 | **Goal Persistence** | In-memory with clear session lifespan                              |
 | **Human In Loop**    | Triggered only by LLM logic (e.g., confidence/ambiguity threshold) |
 | **UI Interaction**   | View-only; updates passively reflect execution                     |
+
+---
+
+## 🚀 Setup and Usage
+
+### Prerequisites
+
+- Python 3.9+
+- OpenAI API key
+
+### Installation
+
+1. Clone the repository
+2. Install dependencies:
+   ```bash
+   pip install -r requirements.txt
+   ```
+
+### Configuration
+
+1. Edit the `start_api_server.bat` file to set your OpenAI API key:
+   ```batch
+   set OPENAI_API_KEY=your-api-key-here
+   ```
+
+2. Toggle master agent mode (optional):
+   ```batch
+   set USE_MASTER_AGENT=true
+   ```
+
+### Running the Application
+
+1. Start the API server:
+   ```bash
+   ./start_api_server.bat
+   ```
+   or manually set environment variables and run:
+   ```bash
+   $env:OPENAI_API_KEY="your-api-key"
+   $env:USE_MASTER_AGENT="false"
+   python nl2sql_api.py
+   ```
+
+2. The API server will start on http://localhost:5000
+
+### Usage Flow
+
+1. **Upload a file**: Send a POST request to `/api/upload` with a CSV file
+   - For schema files (containing TABLE_NAME, COLUMN_NAME, DATA_TYPE columns), the system will create a database structure
+   - For data files, the system will load the data into a SQLite database
+
+2. **Submit queries**: Send a POST request to `/api/query` with a JSON body:
+   ```json
+   {"query": "What is the average loan amount by race?"}
+   ```
+
+3. **View agent activities**: Connect to `/api/events` for real-time Server-Sent Events showing agent activities
+
+### Troubleshooting
+
+- If you see database connection errors, ensure the file was properly uploaded and processed
+- Check the console logs for detailed error messages and agent activities
+- Make sure your OpenAI API key is valid and has sufficient credits
 
 ---
 
