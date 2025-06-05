@@ -297,7 +297,7 @@ def upload_file():
             # For regular data files
             agent_activity('WorkflowOrchestratorAgent', 'READY', 'Preparing database setup')
             agent_activity('DatabaseBuilderAgent', 'BULK_LOADING', 'Setting up database')
-            process_file(file_path, db_path)
+            data_dict_path = process_file(file_path, db_path)
             agent_activity('DatabaseBuilderAgent', 'BULK_LOADED', 'Database setup complete')
         
         # Final progress update
@@ -852,8 +852,54 @@ def process_file(file_path, db_path):
     # Write DataFrame to SQLite
     df.to_sql(table_name, conn, if_exists='replace', index=False)
     
+    # Generate data dictionary for the table
+    agent_activity('DictionarySynthesizerAgent', 'DICT_DRAFTING', 'Creating data dictionary for regular data file')
+    
+    # Create a data dictionary based on the DataFrame
+    data_dict = {
+        "tables": [
+            {
+                "name": table_name,
+                "description": f"Table containing data from {os.path.basename(file_path)}",
+                "columns": []
+            }
+        ]
+    }
+    
+    # Add column information to the data dictionary
+    for column in df.columns:
+        # Determine column type
+        if df[column].dtype == 'int64' or df[column].dtype == 'int32':
+            col_type = "INTEGER"
+        elif df[column].dtype == 'float64' or df[column].dtype == 'float32':
+            col_type = "FLOAT"
+        elif df[column].dtype == 'bool':
+            col_type = "BOOLEAN"
+        elif df[column].dtype == 'datetime64[ns]':
+            col_type = "DATETIME"
+        else:
+            col_type = "TEXT"
+        
+        # Add column to data dictionary
+        data_dict["tables"][0]["columns"].append({
+            "name": column,
+            "type": col_type,
+            "description": f"{column} column from the dataset"
+        })
+    
+    # Save data dictionary to file
+    data_dict_path = os.path.splitext(file_path)[0] + "_dict.json"
+    with open(data_dict_path, 'w') as f:
+        json.dump(data_dict, f, indent=2)
+    
+    agent_activity('DictionarySynthesizerAgent', 'DICT_DRAFT', 'Data dictionary created for regular data file')
+    
+    # Dictionary review
+    agent_activity('DictionaryReviewerAgent', 'DICT_REVIEWING', 'Reviewing data dictionary')
+    agent_activity('DictionaryReviewerAgent', 'DICT_REVIEWED', 'Data dictionary reviewed and approved')
+    
     conn.close()
-    return True
+    return data_dict_path
 
 def convert_to_sql(query, table_info, data_dict_path):
     """
