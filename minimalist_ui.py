@@ -79,6 +79,37 @@ def index():
             margin: 0 auto;
         }
         
+        /* Database selector styling */
+        .database-selector {
+            display: flex;
+            align-items: center;
+            margin-left: auto;
+            margin-right: 1rem;
+        }
+        
+        .database-selector select {
+            padding: 0.375rem 0.75rem;
+            border-radius: 0.375rem;
+            border: 1px solid var(--border-color);
+            background-color: var(--background-color);
+            color: var(--text-color);
+            font-size: 0.875rem;
+            cursor: pointer;
+            outline: none;
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+        
+        .database-selector select:focus {
+            border-color: var(--primary-color);
+            box-shadow: 0 0 0 2px rgba(16, 163, 127, 0.2);
+        }
+        
+        .database-selector label {
+            margin-right: 0.5rem;
+            font-size: 0.875rem;
+            color: var(--secondary-text-color);
+        }
+        
         .chat-container {
             max-width: 800px;
             margin: 0 auto;
@@ -421,10 +452,16 @@ def index():
     </head>
     <body>
         <div class="header">
-            <h1>Reveal IQ</h1>
             <button id="clearCacheButton" class="clear-cache-button" title="Clear all uploaded and generated files">
                 <i class="fas fa-trash"></i>
             </button>
+            <h1>NL2SQL Tool</h1>
+            <div class="database-selector">
+                <label for="databaseSelect">Database:</label>
+                <select id="databaseSelect" disabled>
+                    <option value="">No databases available</option>
+                </select>
+            </div>
         </div>
         
         <div class="chat-container">
@@ -466,12 +503,15 @@ def index():
         <script>
             let dataDictPath = null;
             let dbPath = null;
+            let availableDatabases = [];
+            // DOM elements
             const messagesContainer = document.getElementById('messages');
             const queryInput = document.getElementById('query');
             const sendButton = document.getElementById('sendButton');
             const fileInput = document.getElementById('file');
             const filePreview = document.getElementById('filePreview');
             const clearCacheButton = document.getElementById('clearCacheButton');
+            const databaseSelect = document.getElementById('databaseSelect');
             
             // Function to add a user message
             function addUserMessage(message) {
@@ -653,6 +693,19 @@ def index():
                         dataDictPath = result.data_dict_path;
                         dbPath = result.db_path;
                         
+                        // Add the new database to the available databases
+                        const newDb = {
+                            name: file.name,
+                            path: result.db_path,
+                            data_dict_path: result.data_dict_path
+                        };
+                        
+                        // Add to available databases if not already present
+                        if (!availableDatabases.some(db => db.path === newDb.path)) {
+                            availableDatabases.push(newDb);
+                            updateDatabaseSelector();
+                        }
+                        
                         // Add success message
                         let message = `<p><i class="fas fa-check-circle" style="color: var(--primary-color);"></i> File uploaded and processed successfully!</p>`;
                         
@@ -809,6 +862,10 @@ def index():
                         // Reset global variables
                         dataDictPath = null;
                         dbPath = null;
+                        availableDatabases = [];
+                        
+                        // Update database selector
+                        updateDatabaseSelector();
                         
                         // Clear file preview
                         filePreview.style.display = 'none';
@@ -1184,6 +1241,75 @@ def index():
                 // Enable send button for next query
                 sendButton.disabled = !queryInput.value.trim();
             }
+            
+            // Function to load available databases
+            async function loadAvailableDatabases() {
+                try {
+                    const response = await fetch('/api/list_databases');
+                    
+                    if (!response.ok) {
+                        console.error('Failed to load databases');
+                        return;
+                    }
+                    
+                    const result = await response.json();
+                    availableDatabases = result.databases || [];
+                    
+                    // Update the database selector
+                    updateDatabaseSelector();
+                } catch (error) {
+                    console.error('Error loading databases:', error);
+                }
+            }
+            
+            // Function to update the database selector
+            function updateDatabaseSelector() {
+                // Clear existing options
+                databaseSelect.innerHTML = '';
+                
+                if (availableDatabases.length === 0) {
+                    // Add default option
+                    const option = document.createElement('option');
+                    option.value = '';
+                    option.textContent = 'No databases available';
+                    option.disabled = true;
+                    option.selected = true;
+                    databaseSelect.appendChild(option);
+                    databaseSelect.disabled = true;
+                    return;
+                }
+                
+                // Add options for each database
+                availableDatabases.forEach(db => {
+                    const option = document.createElement('option');
+                    option.value = db.path;
+                    option.textContent = db.name;
+                    option.selected = db.path === dbPath;
+                    databaseSelect.appendChild(option);
+                });
+                
+                // Enable the selector
+                databaseSelect.disabled = false;
+            }
+            
+            // Handle database selection change
+            databaseSelect.addEventListener('change', function() {
+                const selectedDb = this.value;
+                if (selectedDb) {
+                    // Find the selected database in the available databases
+                    const db = availableDatabases.find(db => db.path === selectedDb);
+                    if (db) {
+                        dbPath = db.path;
+                        dataDictPath = db.data_dict_path;
+                        
+                        // Add a message to indicate the database change
+                        addBotMessage(`<p><i class="fas fa-database"></i> Switched to database: <strong>${db.name}</strong></p>`);
+                    }
+                }
+            });
+            
+            // Load available databases on page load
+            loadAvailableDatabases();
             
             // Auto-resize textarea on load
             queryInput.style.height = 'auto';
