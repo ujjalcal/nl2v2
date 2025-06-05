@@ -6,24 +6,15 @@ A minimalist, agentic AI application that converts natural language queries to S
 
 - **Agentic Architecture**: Specialized agents work together to process queries and data
 - **Real-time Agent Activity**: Server-Sent Events (SSE) for live updates on agent activities
-- **Comprehensive Data Processing**: Automatic file classification, profiling, and dictionary creation
+- **Data Processing**: Automatic file classification, profiling, and dictionary creation
 - **Natural Language Queries**: Convert plain English questions to optimized SQL
-- **Complex Query Handling**: Breaks down complex queries into manageable sub-tasks
-- **Robust Error Handling**: Comprehensive error recovery and fallback mechanisms
-- **Workflow State Management**: Clear state transitions with validation
+- **Multi-format Support**: CSV, JSON, XML, YAML, and Excel files
 
 ## Agentic Architecture
 
-The NL2SQL tool is built on a true agentic architecture with specialized agents that handle different aspects of the workflow:
+The NL2SQL tool is built on an agentic architecture with specialized agents that handle different aspects of the workflow:
 
-### Core Components
-
-- **Workflow Orchestrator**: Manages the finite-state machine (FSM) for data processing
-- **Task Scheduler**: Coordinates execution of tasks based on workflow state
-- **Artifact Registry**: Tracks all artifacts with immutable hashes
-- **Event System**: Real-time agent activity tracking via Server-Sent Events (SSE)
-
-### Specialized Agents
+### Core Agents
 
 - **FileClassifierAgent**: Identifies file type, structure, and content purpose
 - **DataProfilerAgent**: Analyzes data patterns, types, and statistics
@@ -32,26 +23,32 @@ The NL2SQL tool is built on a true agentic architecture with specialized agents 
 - **QueryDecomposerAgent**: Breaks down complex queries into sub-queries
 - **SQLGeneratorAgent**: Translates natural language to SQL
 - **SQLExecutorAgent**: Executes SQL queries against the database
+- **CodeGeneratorAgent**: Generates Python code for complex operations
+- **CodeExecutorAgent**: Executes generated Python code in a sandboxed environment
 - **ResultCombinerAgent**: Joins results from multiple execution paths
 
 ### Workflow States
 
-The system implements a complete finite-state machine with the following states:
+The system implements a state machine with the following states:
 ```
-FILE_DROPPED → CLASSIFIED → PROFILED → DICT_DRAFT → DICT_REVIEWED → READY → BULK_LOADED → DONE
+IDLE → PROCESSING → FILE_DROPPED → CLASSIFIED → PROFILED → DICT_DRAFT → DICT_REVIEWED → READY → BULK_LOADED → DONE
 ```
 
-Each state transition is validated to prevent hallucinations and ensure data integrity.
+## API Endpoints
 
-## Query Pipeline
+- `POST /api/upload`: Upload and process a data file
+  - Accepts: multipart/form-data with 'file' field
+  - Returns: Processing status and file information
 
-The QueryPipeline class provides a modular approach to processing natural language queries:
+- `POST /api/query`: Process a natural language query
+  - Accepts: JSON with 'query' field
+  - Returns: Query results and execution details
 
-1. **Query Analysis**: Determines query intent, complexity, and processing needs
-2. **Query Normalization**: Standardizes terminology to match database schema
-3. **SQL Conversion**: Transforms natural language to optimized SQL
-4. **Query Execution**: Runs the SQL against the database
-5. **Result Formatting**: Presents results in a clean, readable format
+- `GET /api/events`: Stream real-time agent activities
+  - Returns: Server-Sent Events stream
+
+- `GET /api/health`: Health check endpoint
+  - Returns: API status
 
 ## Setup Instructions
 
@@ -62,20 +59,32 @@ The QueryPipeline class provides a modular approach to processing natural langua
 
 ### Installation
 
-1. Create a virtual environment (optional but recommended):
+1. Create and activate a virtual environment:
    ```
    python -m venv venv
    venv\Scripts\activate  # On Windows
    source venv/bin/activate  # On macOS/Linux
    ```
 
-2. Install Python dependencies:
+2. Install dependencies:
    ```
    pip install -r requirements.txt
    ```
+   
+   Required packages:
+   - python-dotenv
+   - openai
+   - pyyaml
+   - flask
+   - flask-cors
+   - pandas
+   - werkzeug
+   - matplotlib
+   - numpy
+   - xmltodict
+   - openpyxl (for Excel support)
 
-3. Set up your OpenAI API key:
-   Create a `.env` file in the root directory with the following content:
+3. Configure your OpenAI API key in a `.env` file:
    ```
    OPENAI_API_KEY=your_api_key_here
    ```
@@ -85,36 +94,30 @@ The QueryPipeline class provides a modular approach to processing natural langua
    python nl2sql_app.py
    ```
    
-   This will launch both the API server and UI.
+   This will start:
+   - API server at http://localhost:5000
+   - Web UI at http://localhost:5001
+
+## Configuration
+
+Environment variables:
+- `OPENAI_API_KEY`: Required. Your OpenAI API key
+- `TEMPORARY_DIR`: Directory for temporary files (default: 'temp')
+- `UPLOAD_FOLDER`: Directory for uploaded files (default: 'uploads')
+- `MAX_CONTENT_LENGTH`: Maximum file upload size in bytes (default: 16MB)
 
 ## Usage
 
-1. Upload a data file (CSV, JSON, XML, YAML, Excel)
-2. Watch as the agents classify, profile, and create a data dictionary
-3. Ask questions about your data in natural language
-4. View the results and explanations
-5. Use the clear cache option to remove uploaded and generated files when needed
+1. Upload a data file using the web interface or API
+2. The system will automatically process the file through the agent pipeline
+3. Ask questions about your data using natural language
+4. View the results and SQL queries in the web interface
 
-## Folder Structure
+## File Structure
 
-- `temp/` - Temporary folder for uploaded files and generated data
-- `test/` - Test files and examples
-
-## Example Queries
-
-- "What is the average value by category?"
-- "Show me the top 5 items with the highest prices"
-- "How many records are in each table?"
-- "What's the relationship between price and quantity?"
-- "Compare values across different categories"
-- "Generate sample questions for this database"
-
-## Implementation Notes
-
-- Uses GPT-4.1 Nano for all LLM tasks
-- Focuses on demo functionality without excessive error handling
-- Keeps code simple with single files containing multiple functions where possible
-- Follows anti-hallucination backbone design with state validation
+- `/temp`: Temporary files and processing artifacts
+- `/test`: Test files and examples
+- `/uploads`: Default location for uploaded files
 
 ## License
 
