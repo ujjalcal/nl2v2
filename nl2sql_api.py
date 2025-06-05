@@ -888,7 +888,12 @@ def process_file(file_path, db_path):
         })
     
     # Save data dictionary to file
-    data_dict_path = os.path.splitext(file_path)[0] + "_dict.json"
+    # Extract timestamp from file_path to ensure consistent naming with database file
+    file_basename = os.path.basename(file_path)
+    timestamp = file_basename.split('_')[0] if '_' in file_basename else int(time.time())
+    
+    # Create data dictionary with same timestamp prefix as database file
+    data_dict_path = os.path.join('temp', f"{timestamp}_dict.json")
     with open(data_dict_path, 'w') as f:
         json.dump(data_dict, f, indent=2)
     
