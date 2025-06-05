@@ -421,7 +421,7 @@ def index():
     </head>
     <body>
         <div class="header">
-            <h1>NL2SQL Tool</h1>
+            <h1>Reveal IQ</h1>
             <button id="clearCacheButton" class="clear-cache-button" title="Clear all uploaded and generated files">
                 <i class="fas fa-trash"></i>
             </button>
@@ -435,7 +435,8 @@ def index():
                         <i class="fas fa-robot"></i>
                     </div>
                     <div class="content">
-                        <p>Hi, I'm your NL2SQL assistant. I can help you analyze data files and convert your natural language questions into SQL queries.</p>
+                        
+                        <p>Unlock Data Insights with Natural Language</p>
                         <p style="margin-top: 0.5rem;">To get started, upload a data file (CSV, JSON, XML, YAML, Excel) using the attachment button below.</p>
                     </div>
                 </div>
