@@ -291,31 +291,6 @@ def index():
         }
         
         #file {
-            display: none;
-        }
-        
-        .file-preview {
-            display: none;
-            margin-top: 0.5rem;
-            padding: 0.5rem;
-            background-color: #f3f4f6;
-            border-radius: 0.375rem;
-            font-size: 0.875rem;
-        }
-        
-        .file-preview-content {
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-        }
-        
-        .remove-file {
-            background-color: transparent;
-            border: none;
-            color: var(--secondary-text-color);
-            cursor: pointer;
-            padding: 0.25rem;
-            font-size: 0.75rem;
         }
         
         .remove-file:hover {
@@ -513,7 +488,7 @@ def index():
                 <label for="file" class="attachment-button" title="Upload a file">
                     <i class="fas fa-paperclip"></i>
                 </label>
-                <input type="file" id="file" accept=".csv,.json,.xml,.yaml,.yml,.xlsx,.xls">
+                <input type="file" id="file" accept=".csv,.json,.xml,.yaml,.yml,.xlsx,.xls" style="display: none;">
                 <textarea id="query" placeholder="Ask a question about your data..." rows="1"></textarea>
                 <button id="sendButton" disabled>Send</button>
             </div>
