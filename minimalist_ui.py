@@ -1,10 +1,29 @@
-from flask import Flask, render_template_string, request
+from flask import Flask, request, jsonify, render_template_string
 from flask_cors import CORS
 import os
+import requests
 
 # Initialize Flask app
 app = Flask(__name__)
 CORS(app)
+
+# API proxy routes
+@app.route('/api/list_databases', methods=['GET'])
+def list_databases():
+    """Proxy endpoint to forward database listing requests to the API server."""
+    try:
+        # Forward the request to the API server
+        response = requests.get('http://localhost:5000/api/list_databases')
+        
+        # Log the response for debugging
+        print(f"API response: {response.status_code}")
+        print(f"API response content: {response.text[:200]}...")
+        
+        # Return the response from the API server
+        return response.json(), response.status_code
+    except Exception as e:
+        print(f"Error in list_databases proxy: {str(e)}")
+        return jsonify({'error': str(e), 'databases': []}), 500
 
 @app.route('/')
 def index():
@@ -77,6 +96,37 @@ def index():
             font-weight: 600;
             color: var(--text-color);
             margin: 0 auto;
+        }
+        
+        /* Database selector styling */
+        .database-selector {
+            display: flex;
+            align-items: center;
+            margin-left: auto;
+            margin-right: 1rem;
+        }
+        
+        .database-selector select {
+            padding: 0.375rem 0.75rem;
+            border-radius: 0.375rem;
+            border: 1px solid var(--border-color);
+            background-color: var(--background-color);
+            color: var(--text-color);
+            font-size: 0.875rem;
+            cursor: pointer;
+            outline: none;
+            transition: border-color 0.2s, box-shadow 0.2s;
+        }
+        
+        .database-selector select:focus {
+            border-color: var(--primary-color);
+            box-shadow: 0 0 0 2px rgba(16, 163, 127, 0.2);
+        }
+        
+        .database-selector label {
+            margin-right: 0.5rem;
+            font-size: 0.875rem;
+            color: var(--secondary-text-color);
         }
         
         .chat-container {
@@ -241,31 +291,6 @@ def index():
         }
         
         #file {
-            display: none;
-        }
-        
-        .file-preview {
-            display: none;
-            margin-top: 0.5rem;
-            padding: 0.5rem;
-            background-color: #f3f4f6;
-            border-radius: 0.375rem;
-            font-size: 0.875rem;
-        }
-        
-        .file-preview-content {
-            display: flex;
-            align-items: center;
-            gap: 0.5rem;
-        }
-        
-        .remove-file {
-            background-color: transparent;
-            border: none;
-            color: var(--secondary-text-color);
-            cursor: pointer;
-            padding: 0.25rem;
-            font-size: 0.75rem;
         }
         
         .remove-file:hover {
@@ -421,10 +446,16 @@ def index():
     </head>
     <body>
         <div class="header">
-            <h1>Reveal IQ</h1>
             <button id="clearCacheButton" class="clear-cache-button" title="Clear all uploaded and generated files">
                 <i class="fas fa-trash"></i>
             </button>
+            <h1>NL2SQL Tool</h1>
+            <div class="database-selector">
+                <label for="databaseSelect">Database:</label>
+                <select id="databaseSelect" disabled>
+                    <option value="">No databases available</option>
+                </select>
+            </div>
         </div>
         
         <div class="chat-container">
@@ -457,7 +488,7 @@ def index():
                 <label for="file" class="attachment-button" title="Upload a file">
                     <i class="fas fa-paperclip"></i>
                 </label>
-                <input type="file" id="file" accept=".csv,.json,.xml,.yaml,.yml,.xlsx,.xls">
+                <input type="file" id="file" accept=".csv,.json,.xml,.yaml,.yml,.xlsx,.xls" style="display: none;">
                 <textarea id="query" placeholder="Ask a question about your data..." rows="1"></textarea>
                 <button id="sendButton" disabled>Send</button>
             </div>
@@ -466,12 +497,15 @@ def index():
         <script>
             let dataDictPath = null;
             let dbPath = null;
+            let availableDatabases = [];
+            // DOM elements
             const messagesContainer = document.getElementById('messages');
             const queryInput = document.getElementById('query');
             const sendButton = document.getElementById('sendButton');
             const fileInput = document.getElementById('file');
             const filePreview = document.getElementById('filePreview');
             const clearCacheButton = document.getElementById('clearCacheButton');
+            const databaseSelect = document.getElementById('databaseSelect');
             
             // Function to add a user message
             function addUserMessage(message) {
@@ -653,6 +687,19 @@ def index():
                         dataDictPath = result.data_dict_path;
                         dbPath = result.db_path;
                         
+                        // Add the new database to the available databases
+                        const newDb = {
+                            name: file.name,
+                            path: result.db_path,
+                            data_dict_path: result.data_dict_path
+                        };
+                        
+                        // Add to available databases if not already present
+                        if (!availableDatabases.some(db => db.path === newDb.path)) {
+                            availableDatabases.push(newDb);
+                            updateDatabaseSelector();
+                        }
+                        
                         // Add success message
                         let message = `<p><i class="fas fa-check-circle" style="color: var(--primary-color);"></i> File uploaded and processed successfully!</p>`;
                         
@@ -809,6 +856,10 @@ def index():
                         // Reset global variables
                         dataDictPath = null;
                         dbPath = null;
+                        availableDatabases = [];
+                        
+                        // Update database selector
+                        updateDatabaseSelector();
                         
                         // Clear file preview
                         filePreview.style.display = 'none';
@@ -1010,17 +1061,25 @@ def index():
                     
                     // Wait for the response to be parsed
                     const result = await response.json();
-                    
-                    // Note: We don't need to stop the poller here as it will
-                    // automatically stop when the workflow reaches DONE or ERROR state
+                    console.log('File upload response:', result);
                     
                     // Remove typing indicator
                     removeTypingIndicator();
                     
                     if (result.success) {
+                        console.log('File upload successful, setting paths:', {
+                            data_dict_path: result.data_dict_path,
+                            db_path: result.db_path
+                        });
+                        
                         // Store paths for later use
                         dataDictPath = result.data_dict_path;
                         dbPath = result.db_path;
+                        
+                        console.log('Updated global paths:', { dataDictPath, dbPath });
+                        
+                        // Refresh the database list
+                        await loadAvailableDatabases();
                         
                         // Add success message
                         let message = `<p><i class="fas fa-check-circle" style="color: var(--primary-color);"></i> File uploaded and processed successfully!</p>`;
@@ -1069,13 +1128,57 @@ def index():
             // Function to process query
             async function processQuery(query) {
                 try {
-                    // Check if database is ready
+                    // Debug logging
+                    console.log('Processing query with paths:', { dbPath, dataDictPath });
+                    console.log('Available databases:', availableDatabases);
+                    
+                    // Check if we have stored paths in localStorage
+                    const storedDbPath = localStorage.getItem('currentDbPath');
+                    const storedDictPath = localStorage.getItem('currentDictPath');
+                    
+                    if (storedDbPath && storedDictPath) {
+                        console.log('Found stored database paths in localStorage:', { storedDbPath, storedDictPath });
+                        // Use stored paths if global variables are not set
+                        if (!dbPath || !dataDictPath) {
+                            dbPath = storedDbPath;
+                            dataDictPath = storedDictPath;
+                            console.log('Using stored paths from localStorage');
+                        }
+                    }
+                    
+                    // If no database is selected but we have available databases, select the first one
+                    if ((!dbPath || !dataDictPath) && availableDatabases.length > 0) {
+                        console.log('No database selected but databases are available, selecting first one');
+                        dbPath = availableDatabases[0].path;
+                        dataDictPath = availableDatabases[0].data_dict_path;
+                        console.log('Auto-selected database for query:', { 
+                            name: availableDatabases[0].name,
+                            dbPath,
+                            dataDictPath
+                        });
+                        
+                        // Store the selection
+                        localStorage.setItem('currentDbPath', dbPath);
+                        localStorage.setItem('currentDictPath', dataDictPath);
+                    }
+                    
+                    // Final check if database is ready
                     if (!dbPath || !dataDictPath) {
+                        console.error('Database paths not set:', { dbPath, dataDictPath });
                         throw new Error('Please upload a data file first.');
                     }
                     
                     // Show typing indicator
                     addTypingIndicator();
+                    
+                    // Create the request payload with absolute paths
+                    const payload = {
+                        query: query,
+                        db_path: dbPath,
+                        data_dict_path: dataDictPath
+                    };
+                    
+                    console.log('Sending query to API with payload:', payload);
                     
                     // Send query to API
                     const response = await fetch('/api/query', {
@@ -1083,11 +1186,7 @@ def index():
                         headers: {
                             'Content-Type': 'application/json'
                         },
-                        body: JSON.stringify({
-                            query: query,
-                            db_path: dbPath,
-                            data_dict_path: dataDictPath
-                        })
+                        body: JSON.stringify(payload)
                     });
                     
                     if (!response.ok) {
@@ -1185,6 +1284,141 @@ def index():
                 sendButton.disabled = !queryInput.value.trim();
             }
             
+            // Function to load available databases
+            async function loadAvailableDatabases() {
+                try {
+                    console.log('Loading available databases...');
+                    const response = await fetch('/api/list_databases');
+                    
+                    if (!response.ok) {
+                        console.error('Failed to load databases');
+                        return;
+                    }
+                    
+                    const result = await response.json();
+                    console.log('API response:', result);
+                    
+                    availableDatabases = result.databases || [];
+                    console.log('Available databases:', availableDatabases);
+                    
+                    // Update the database selector UI
+                    updateDatabaseSelector();
+                    
+                    // If we have databases but no current selection, select the first one
+                    if (availableDatabases.length > 0) {
+                        // If no database is currently selected, select the first one
+                        if (!dbPath || !dataDictPath) {
+                            dbPath = availableDatabases[0].path;
+                            dataDictPath = availableDatabases[0].data_dict_path;
+                            console.log('Auto-selected first database:', { 
+                                name: availableDatabases[0].name,
+                                dbPath,
+                                dataDictPath
+                            });
+                            
+                            // Add a message to indicate the database selection
+                            addBotMessage(`<p><i class="fas fa-database"></i> Selected database: <strong>${availableDatabases[0].name}</strong></p>`);
+                        } else {
+                            console.log('Using existing database selection:', { dbPath, dataDictPath });
+                        }
+                    } else {
+                        console.log('No databases available');
+                        dbPath = null;
+                        dataDictPath = null;
+                    }
+                } catch (error) {
+                    console.error('Error loading databases:', error);
+                }
+            }
+            
+            // Function to update the database selector
+            function updateDatabaseSelector() {
+                console.log('Updating database selector with available databases:', availableDatabases);
+                databaseSelect.innerHTML = '';
+                
+                if (availableDatabases.length === 0) {
+                    const option = document.createElement('option');
+                    option.value = '';
+                    option.textContent = 'No databases available';
+                    option.disabled = true;
+                    option.selected = true;
+                    databaseSelect.appendChild(option);
+                    databaseSelect.disabled = true;
+                    dbPath = null;
+                    dataDictPath = null;
+                    console.log('No databases available, cleared paths');
+                    return;
+                }
+                
+                // Add options for each database
+                availableDatabases.forEach(db => {
+                    const option = document.createElement('option');
+                    // Store the full database object as a data attribute
+                    option.value = db.path;
+                    
+                    // Handle null data_dict_path - use an empty string instead
+                    const dictPath = db.data_dict_path || '';
+                    option.setAttribute('data-dict-path', dictPath);
+                    option.textContent = db.name;
+                    
+                    // Check if this option should be selected
+                    const isSelected = db.path === dbPath;
+                    option.selected = isSelected;
+                    
+                    console.log(`Adding option: ${db.name}, path: ${db.path}, dict: ${dictPath}, selected: ${isSelected}`);
+                    databaseSelect.appendChild(option);
+                });
+                
+                // Always enable the dropdown if we have databases
+                databaseSelect.disabled = false;
+                console.log('Database selector enabled with', availableDatabases.length, 'options');
+                
+                // If no database was selected, select the first one
+                if (!foundSelected && availableDatabases.length > 0) {
+                    databaseSelect.options[0].selected = true;
+                    dbPath = availableDatabases[0].path;
+                    dataDictPath = availableDatabases[0].data_dict_path;
+                }
+                databaseSelect.disabled = false;
+            }
+            
+            // Handle database selection change
+            databaseSelect.addEventListener('change', function() {
+                const selectedOption = this.options[this.selectedIndex];
+                const selectedDb = selectedOption.value;
+                const selectedDictPath = selectedOption.getAttribute('data-dict-path');
+                
+                console.log('Database selection changed:', { 
+                    value: selectedDb,
+                    dictPath: selectedDictPath,
+                    text: selectedOption.textContent 
+                });
+                
+                if (selectedDb) {
+                    // Find the selected database in the available databases
+                    const db = availableDatabases.find(db => db.path === selectedDb);
+                    console.log('Found database object:', db);
+                    
+                    if (db) {
+                        // Update the global variables for query processing
+                        dbPath = db.path;
+                        dataDictPath = db.data_dict_path;
+                        
+                        console.log('Updated global paths:', { dbPath, dataDictPath });
+                        
+                        // Add a message to indicate the database change
+                        addBotMessage(`<p><i class="fas fa-database"></i> Switched to database: <strong>${db.name}</strong></p>`);
+                        
+                        // Force synchronization with the backend
+                        localStorage.setItem('currentDbPath', dbPath);
+                        localStorage.setItem('currentDictPath', dataDictPath);
+                    }
+                }
+            });
+            
+            // Load available databases on page load
+            loadAvailableDatabases();
+            
             // Auto-resize textarea on load
             queryInput.style.height = 'auto';
             queryInput.style.height = queryInput.scrollHeight + 'px';
@@ -1264,6 +1498,24 @@ def proxy_events():
         
         # Forward the request to the API server
         response = requests.get(f'http://localhost:5000/api/events?since={since}')
+        
+        # Return the API response
+        return response.content, response.status_code, {'Content-Type': 'application/json'}
+    except Exception as e:
+        return {
+            'error': f'Error forwarding request to API server: {str(e)}'
+        }, 500
+
+@app.route('/api/list_databases', methods=['GET'])
+def proxy_list_databases():
+    """
+    Proxy the list databases request to the API server.
+    """
+    import requests
+    
+    try:
+        # Forward the request to the API server
+        response = requests.get('http://localhost:5000/api/list_databases')
         
         # Return the API response
         return response.content, response.status_code, {'Content-Type': 'application/json'}
