@@ -88,6 +88,75 @@ def health_check():
         'version': '1.0.0'
     })
 
+@app.route('/api/list_databases', methods=['GET'])
+def list_databases():
+    """List all available databases in the temp directory."""
+    agent_activity('WorkflowOrchestratorAgent', 'LISTING_DATABASES', 'Listing available databases')
+    
+    databases = []
+    
+    # Scan the temp directory for database files
+    for file in os.listdir('temp'):
+        if file.endswith('_database.db'):
+            db_path = os.path.join('temp', file)
+            
+            # Try to find the corresponding data dictionary
+            timestamp = file.split('_')[0]
+            potential_dict_paths = [
+                os.path.join('temp', f"{timestamp}_dict.json"),
+                os.path.join('temp', f"{timestamp}_data_dict.json")
+            ]
+            
+            data_dict_path = None
+            for path in potential_dict_paths:
+                if os.path.exists(path):
+                    data_dict_path = path
+                    break
+            
+            # If no data dictionary found, try to find any JSON file with similar name
+            if not data_dict_path:
+                base_name = os.path.splitext(file)[0]
+                for temp_file in os.listdir('temp'):
+                    if temp_file.startswith(base_name) and temp_file.endswith('.json'):
+                        data_dict_path = os.path.join('temp', temp_file)
+                        break
+            
+            # Get file creation time to use as a display name if needed
+            try:
+                file_time = os.path.getctime(db_path)
+                time_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(file_time))
+            except:
+                time_str = 'Unknown'
+                
+            # Try to get a better name from the data dictionary if available
+            display_name = f"Database {time_str}"
+            if data_dict_path and os.path.exists(data_dict_path):
+                try:
+                    with open(data_dict_path, 'r') as f:
+                        data_dict = json.load(f)
+                        if 'database_name' in data_dict:
+                            display_name = data_dict['database_name']
+                        elif 'name' in data_dict:
+                            display_name = data_dict['name']
+                except:
+                    pass
+            
+            databases.append({
+                'name': display_name,
+                'path': db_path,
+                'data_dict_path': data_dict_path,
+                'timestamp': time_str
+            })
+    
+    # Sort databases by timestamp (newest first)
+    databases.sort(key=lambda x: x['timestamp'], reverse=True)
+    
+    agent_activity('WorkflowOrchestratorAgent', 'DATABASES_LISTED', f'Found {len(databases)} databases')
+    
+    return jsonify({
+        'databases': databases
+    })
+
 @app.route('/api/events', methods=['GET'])
 def get_events():
     """Get all agent activities."""
@@ -228,7 +297,7 @@ def upload_file():
             # For regular data files
             agent_activity('WorkflowOrchestratorAgent', 'READY', 'Preparing database setup')
             agent_activity('DatabaseBuilderAgent', 'BULK_LOADING', 'Setting up database')
-            process_file(file_path, db_path)
+            data_dict_path = process_file(file_path, db_path)
             agent_activity('DatabaseBuilderAgent', 'BULK_LOADED', 'Database setup complete')
         
         # Final progress update
@@ -783,8 +852,59 @@ def process_file(file_path, db_path):
     # Write DataFrame to SQLite
     df.to_sql(table_name, conn, if_exists='replace', index=False)
     
+    # Generate data dictionary for the table
+    agent_activity('DictionarySynthesizerAgent', 'DICT_DRAFTING', 'Creating data dictionary for regular data file')
+    
+    # Create a data dictionary based on the DataFrame
+    data_dict = {
+        "tables": [
+            {
+                "name": table_name,
+                "description": f"Table containing data from {os.path.basename(file_path)}",
+                "columns": []
+            }
+        ]
+    }
+    
+    # Add column information to the data dictionary
+    for column in df.columns:
+        # Determine column type
+        if df[column].dtype == 'int64' or df[column].dtype == 'int32':
+            col_type = "INTEGER"
+        elif df[column].dtype == 'float64' or df[column].dtype == 'float32':
+            col_type = "FLOAT"
+        elif df[column].dtype == 'bool':
+            col_type = "BOOLEAN"
+        elif df[column].dtype == 'datetime64[ns]':
+            col_type = "DATETIME"
+        else:
+            col_type = "TEXT"
+        
+        # Add column to data dictionary
+        data_dict["tables"][0]["columns"].append({
+            "name": column,
+            "type": col_type,
+            "description": f"{column} column from the dataset"
+        })
+    
+    # Save data dictionary to file
+    # Extract timestamp from file_path to ensure consistent naming with database file
+    file_basename = os.path.basename(file_path)
+    timestamp = file_basename.split('_')[0] if '_' in file_basename else int(time.time())
+    
+    # Create data dictionary with same timestamp prefix as database file
+    data_dict_path = os.path.join('temp', f"{timestamp}_dict.json")
+    with open(data_dict_path, 'w') as f:
+        json.dump(data_dict, f, indent=2)
+    
+    agent_activity('DictionarySynthesizerAgent', 'DICT_DRAFT', 'Data dictionary created for regular data file')
+    
+    # Dictionary review
+    agent_activity('DictionaryReviewerAgent', 'DICT_REVIEWING', 'Reviewing data dictionary')
+    agent_activity('DictionaryReviewerAgent', 'DICT_REVIEWED', 'Data dictionary reviewed and approved')
+    
     conn.close()
-    return True
+    return data_dict_path
 
 def convert_to_sql(query, table_info, data_dict_path):
     """
@@ -1039,29 +1159,69 @@ def process_schema_file(file_path, db_path, df):
         
         tables[table_name].append(column_info)
     
+    # Report initial schema analysis
+    agent_activity('SchemaAnalyzerAgent', 'ANALYZING', 
+                  f'Analyzing schema with {len(tables)} tables', 
+                  {'table_count': len(tables), 'table_names': list(tables.keys())})
+    
+    # Identify potential relationships between tables
+    agent_activity('RelationshipDetectorAgent', 'ANALYZING', 'Identifying potential relationships between tables')
+    relationships = identify_relationships_for_dict(tables)
+    
+    # Report identified relationships
+    agent_activity('RelationshipDetectorAgent', 'RELATIONSHIPS_IDENTIFIED', 
+                  f'Identified {len(relationships)} potential relationships between tables',
+                  {'relationships': relationships})
+    
     # Generate data dictionary using LLM first
     print(f"\n[DEBUG] Generating data dictionary for schema with {len(tables)} tables")
-    agent_activity('DictionarySynthesizerAgent', 'DICT_DRAFTING', f'Creating dictionary for {len(tables)} tables')
+    agent_activity('DictionarySynthesizerAgent', 'DICT_DRAFTING', 
+                  f'Creating comprehensive data dictionary for {len(tables)} tables',
+                  {'table_count': len(tables), 'relationship_count': len(relationships)})
+    
+    # Generate the data dictionary with detailed tracking
     data_dict = generate_data_dictionary_for_schema(tables)
-    print(f"[DEBUG] Data dictionary generated with keys: {list(data_dict.keys())}")
-    if 'tables' in data_dict:
-        print(f"[DEBUG] Tables in data dictionary: {list(data_dict['tables'].keys())}")
+    
+    # Add relationships to the data dictionary
+    data_dict['relationships'] = relationships
+    
+    # Report data dictionary generation completion
+    agent_activity('DictionarySynthesizerAgent', 'DICT_DRAFT', 
+                  'Data dictionary draft completed', 
+                  {
+                      'table_count': len(data_dict.get('tables', {})),
+                      'relationship_count': len(relationships),
+                      'dict_keys': list(data_dict.keys())
+                  })
     
     # Save data dictionary to file
     data_dict_path = os.path.splitext(file_path)[0] + "_dict.json"
     print(f"[DEBUG] Saving data dictionary to: {data_dict_path}")
     with open(data_dict_path, 'w') as f:
         json.dump(data_dict, f, indent=2, cls=NpEncoder)
-    print(f"[DEBUG] Data dictionary saved successfully")
-    agent_activity('DictionarySynthesizerAgent', 'DICT_DRAFT', 'Data dictionary created successfully')
+    
+    # Report data dictionary saved
+    agent_activity('ArtifactRegistryAgent', 'ARTIFACT_CREATED', 
+                  'Data dictionary saved to file',
+                  {'file_path': data_dict_path, 'file_size': os.path.getsize(data_dict_path)})
     
     # Create SQLite database
     conn = sqlite3.connect(db_path)
+    agent_activity('DatabaseBuilderAgent', 'BULK_LOADING', 
+                  'Creating SQLite database with tables and relationships',
+                  {'db_path': db_path, 'table_count': len(tables)})
     
     # Create tables and generate sample data for each using the data dictionary
+    table_count = 0
     for table_name, columns in tables.items():
+        table_count += 1
         # Sort columns by ordinal position if available
         columns.sort(key=lambda x: x.get("ordinal_position", 0))
+        
+        # Report table creation start
+        agent_activity('DatabaseBuilderAgent', 'TABLE_CREATING', 
+                      f'Creating table {table_count}/{len(tables)}: {table_name}',
+                      {'table_name': table_name, 'column_count': len(columns)})
         
         # Create table
         create_table_sql = f"CREATE TABLE IF NOT EXISTS {table_name} (\n"
@@ -1075,35 +1235,39 @@ def process_schema_file(file_path, db_path, df):
         create_table_sql += ",\n".join(column_defs)
         create_table_sql += "\n);"
         
-        # Execute the CREATE TABLE statement without try-except to allow errors to propagate
+        # Execute the CREATE TABLE statement
         conn.execute(create_table_sql)
         
-        # Generate sample data using the data dictionary (5 rows per table)
-        print(f"\n[DEBUG] Generating sample data for table: {table_name}")
-        print(f"[DEBUG] Using data dictionary with keys: {list(data_dict.keys())}")
-        if 'tables' in data_dict and table_name in data_dict['tables']:
-            print(f"[DEBUG] Table info available in data dictionary")
-        else:
-            print(f"[DEBUG] WARNING: Table {table_name} not found in data dictionary tables: {list(data_dict.get('tables', {}).keys())}")
+        # Report table schema created
+        agent_activity('DatabaseBuilderAgent', 'TABLE_CREATED', 
+                      f'Table schema created: {table_name}',
+                      {'table_name': table_name, 'sql': create_table_sql})
         
-        # Generate sample data with NO FALLBACKS - let errors propagate
-        print(f"\n[DEBUG] Generating realistic sample data for table: {table_name}")
-        print(f"[DEBUG] Number of columns: {len(columns)}")
-        print(f"[DEBUG] Data dict keys: {list(data_dict.keys())}")
-        
-        # Show table description if available
+        # Get table description from data dictionary
+        table_description = "No description available"
         if 'tables' in data_dict and table_name in data_dict['tables'] and 'table_description' in data_dict['tables'][table_name]:
-            print(f"[DEBUG] Found table in data dictionary. Table description: {data_dict['tables'][table_name]['table_description']}")
+            table_description = data_dict['tables'][table_name]['table_description']
         
-        # Call LLM for sample data generation - no try/except to allow errors to propagate
-        print(f"\n[DEBUG] Sending prompt to LLM for table {table_name}")
-        agent_activity('SampleDataGeneratorAgent', 'BULK_LOADING', f'Generating sample data for table {table_name}')
+        # Report sample data generation start
+        agent_activity('SampleDataGeneratorAgent', 'GENERATING', 
+                      f'Generating sample data for table: {table_name}',
+                      {
+                          'table_name': table_name, 
+                          'table_description': table_description,
+                          'column_count': len(columns)
+                      })
+        
+        # Generate sample data
         sample_data = generate_realistic_sample_data(table_name, columns, data_dict, 5)
         
         # Insert sample data
         if sample_data:
-            print(f"[DEBUG] Successfully generated {len(sample_data)} rows of sample data")
-            agent_activity('DatabaseBuilderAgent', 'BULK_LOADING', f'Creating table {table_name} with {len(sample_data)} rows')
+            # Report sample data generated
+            agent_activity('SampleDataGeneratorAgent', 'DATA_GENERATED', 
+                          f'Generated {len(sample_data)} sample rows for table: {table_name}',
+                          {'table_name': table_name, 'row_count': len(sample_data)})
+            
+            # Insert the data
             col_names = [col["name"] for col in columns]
             placeholders = ", ".join(["?" for _ in col_names])
             insert_sql = f"INSERT INTO {table_name} ({', '.join(col_names)}) VALUES ({placeholders})"
@@ -1136,12 +1300,30 @@ def generate_data_dictionary_for_schema(tables):
         "tables": {}
     }
     
+    # Report the total number of tables to be processed
+    total_tables = len(tables)
+    agent_activity('DictionarySynthesizerAgent', 'DICT_DRAFTING', 
+                  f'Starting data dictionary generation for {total_tables} tables',
+                  {'total_tables': total_tables, 'table_names': list(tables.keys())})
+    
     # Process each table
+    table_count = 0
     for table_name, columns in tables.items():
+        table_count += 1
+        agent_activity('DictionarySynthesizerAgent', 'DICT_DRAFTING', 
+                      f'Processing table {table_count}/{total_tables}: {table_name}',
+                      {'table_name': table_name, 'columns_count': len(columns)})
+        
         # Prepare column information for LLM
         columns_info = ""
         for col in columns:
             columns_info += f"Column: {col['name']}, Type: {col['type']}\n"
+        
+        # Report detailed column information
+        column_details = [{'name': col['name'], 'type': col['type']} for col in columns]
+        agent_activity('SchemaAnalyzerAgent', 'ANALYZING', 
+                      f'Analyzing schema for table: {table_name}',
+                      {'table_name': table_name, 'columns': column_details})
         
         # Create prompt for GPT
         prompt = f"""
@@ -1172,6 +1354,9 @@ def generate_data_dictionary_for_schema(tables):
             ...
         ```
         """
+        
+        agent_activity('LLMAgent', 'PROCESSING', 
+                      f'Generating semantic descriptions for table: {table_name}')
         
         try:
             response = client.chat.completions.create(
@@ -1214,6 +1399,16 @@ def generate_data_dictionary_for_schema(tables):
                 # Add to data dictionary
                 data_dict["tables"][table_name] = table_dict
                 
+                # Report successful table processing with table description
+                agent_activity('DictionarySynthesizerAgent', 'TABLE_PROCESSED', 
+                              f'Table {table_name} processed successfully',
+                              {
+                                  'table_name': table_name,
+                                  'table_description': table_dict['table_description'],
+                                  'columns_count': len(table_dict['columns']),
+                                  'column_names': list(table_dict['columns'].keys())
+                              })
+                
             except Exception as yaml_error:
                 print(f"Error parsing YAML for table {table_name}: {str(yaml_error)}")
                 # Add basic information if YAML parsing fails
@@ -1226,6 +1421,11 @@ def generate_data_dictionary_for_schema(tables):
                         "synonyms": [col["name"].replace("_", " ")]
                     } for col in columns}
                 }
+                
+                # Report error in table processing
+                agent_activity('DictionarySynthesizerAgent', 'TABLE_ERROR', 
+                              f'Error processing table {table_name}: {str(yaml_error)}',
+                              {'table_name': table_name, 'error': str(yaml_error)})
             
         except Exception as e:
             print(f"Error generating data dictionary for table {table_name}: {str(e)}")
@@ -1247,90 +1447,112 @@ def generate_data_dictionary_for_schema(tables):
 
 def identify_relationships_for_dict(tables):
     """
-    Identify relationships between tables for the data dictionary.
+    Identify potential relationships between tables based on column names.
+    This is a heuristic approach that looks for common patterns in column names.
     
     Args:
-        tables: Dictionary mapping table names to their column definitions
-    
+        tables: Dictionary of tables with their columns
+        
     Returns:
-        List of relationship dictionaries
+        List of potential relationships
     """
     relationships = []
-    
-    # Get all tables and their columns
     table_names = list(tables.keys())
     
-    # Look for common column names that might indicate relationships
+    # Track progress for agent activity
+    agent_activity('RelationshipDetectorAgent', 'ANALYZING', 
+                  f'Analyzing {len(table_names)} tables for potential relationships')
+    
+    # Look for potential foreign keys based on naming conventions
+    for i, parent_table in enumerate(table_names):
+        parent_columns = [col["name"].lower() for col in tables[parent_table]]
+        
+        # Check if this table has an ID column that might be referenced
+        has_id = any(col.lower() == 'id' for col in parent_columns)
+        
+        if has_id:
+            for child_table in table_names:
+                if child_table == parent_table:
+                    continue
+                    
+                child_columns = [col["name"].lower() for col in tables[child_table]]
+                
+                # Look for columns like parent_table_id or parent_id
+                potential_fk_names = [
+                    f"{parent_table.lower()}_id",
+                    f"{parent_table.lower()[:-1]}_id" if parent_table.lower().endswith('s') else None
+                ]
+                
+                # Filter out None values
+                potential_fk_names = [name for name in potential_fk_names if name]
+                
+                for fk_name in potential_fk_names:
+                    if fk_name in child_columns:
+                        relationship = {
+                            "type": "reference",
+                            "parent_table": parent_table,
+                            "parent_column": "id",
+                            "child_table": child_table,
+                            "child_column": fk_name,
+                            "relationship_type": "one-to-many",
+                            "description": f"{child_table}.{fk_name} references {parent_table}.id"
+                        }
+                        relationships.append(relationship)
+                        
+                        # Report identified relationship
+                        agent_activity('RelationshipDetectorAgent', 'RELATIONSHIP_FOUND', 
+                                      f'Found potential relationship: {parent_table}.id → {child_table}.{fk_name}',
+                                      relationship)
+    
+    # Look for common columns that might indicate relationships (e.g., same column name in both tables)
     for i in range(len(table_names)):
         for j in range(i+1, len(table_names)):
             table1 = table_names[i]
             table2 = table_names[j]
-            columns1 = [col["name"] for col in tables[table1]]
-            columns2 = [col["name"] for col in tables[table2]]
+            columns1 = [col["name"].lower() for col in tables[table1]]
+            columns2 = [col["name"].lower() for col in tables[table2]]
             
             # Find common columns
             common_columns = set(columns1).intersection(set(columns2))
             
             # Look for ID columns that might indicate relationships
             for col in common_columns:
-                if col.lower().endswith('id') or col.lower() == 'id':
-                    relationships.append({
+                if col.endswith('id') or col == 'id':
+                    relationship = {
                         "type": "join",
                         "table1": table1,
                         "table2": table2,
                         "column": col,
+                        "relationship_type": "many-to-many",
                         "description": f"{table1}.{col} may join with {table2}.{col}"
-                    })
-            
-            # Look for columns in table1 that might reference table2
-            for col in columns1:
-                # Check if column name contains the name of table2 (e.g., customer_id in orders table)
-                if table2.lower() in col.lower() and col.lower().endswith('id'):
-                    relationships.append({
-                        "type": "reference",
-                        "from_table": table1,
-                        "to_table": table2,
-                        "column": col,
-                        "description": f"{table1}.{col} may reference {table2}"
-                    })
-            
-            # Look for columns in table2 that might reference table1
-            for col in columns2:
-                # Check if column name contains the name of table1
-                if table1.lower() in col.lower() and col.lower().endswith('id'):
-                    relationships.append({
-                        "type": "reference",
-                        "from_table": table2,
-                        "to_table": table1,
-                        "column": col,
-                        "description": f"{table2}.{col} may reference {table1}"
-                    })
+                    }
+                    relationships.append(relationship)
+                    
+                    # Report identified relationship
+                    agent_activity('RelationshipDetectorAgent', 'RELATIONSHIP_FOUND', 
+                                  f'Found potential join: {table1}.{col} ↔ {table2}.{col}',
+                                  relationship)
     
     return relationships
 
 def map_data_type_to_sqlite(data_type):
     """
-    Map data types from schema to SQLite data types.
+    Map a data type to a SQLite data type.
     
     Args:
-        data_type: Original data type from schema
-    
+        data_type: Data type to map
+        
     Returns:
         SQLite data type
     """
     data_type = data_type.upper()
-    
-    if data_type in ['TEXT', 'VARCHAR', 'CHAR', 'STRING']:
-        return 'TEXT'
-    elif data_type in ['NUMBER', 'INT', 'INTEGER', 'BIGINT', 'SMALLINT']:
+    if data_type in ['INT', 'INTEGER', 'TINYINT', 'SMALLINT', 'MEDIUMINT', 'BIGINT', 'UNSIGNED BIG INT', 'INT2', 'INT8']:
         return 'INTEGER'
-    elif data_type in ['FLOAT', 'DOUBLE', 'DECIMAL', 'REAL']:
+    elif data_type in ['CHARACTER', 'VARCHAR', 'VARYING CHARACTER', 'NCHAR', 'NATIVE CHARACTER', 'NVARCHAR', 'TEXT', 'CLOB', 'CHAR', 'STRING']:
+        return 'TEXT'
+    elif data_type in ['REAL', 'DOUBLE', 'DOUBLE PRECISION', 'FLOAT', 'NUMERIC', 'DECIMAL', 'BOOLEAN', 'DATE', 'DATETIME']:
         return 'REAL'
-    elif data_type in ['DATE', 'DATETIME', 'TIMESTAMP']:
-        return 'TEXT'
-    elif data_type in ['BOOLEAN', 'BOOL']:
-        return 'INTEGER'
-    elif data_type in ['BLOB', 'BINARY']:
+    elif data_type in ['BLOB']:
         return 'BLOB'
     else:
         return 'TEXT'  # Default to TEXT for unknown types
