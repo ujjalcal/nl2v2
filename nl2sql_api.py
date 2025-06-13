@@ -207,110 +207,24 @@ def upload_file():
         # Workflow orchestrator starts the process
         agent_activity('WorkflowOrchestratorAgent', 'FILE_DROPPED', f'Starting to process file: {file.filename}')
         
-        # File upload agent receives the file
-        agent_activity('FileUploadAgent', 'FILE_DROPPED', f'Received file: {file.filename}')
-        
         # Save the file to a temporary location
         timestamp = int(time.time())
         file_path = os.path.join('temp', f"{timestamp}_{secure_filename(file.filename)}")
         file.save(file_path)
         
-        # File upload agent confirms file is saved
-        agent_activity('FileUploadAgent', 'FILE_DROPPED', 'File saved successfully')
+        # Create and use the DataProcessingAgent to process the file
+        from data_processing_agent import DataProcessingAgent
+        data_agent = DataProcessingAgent()
+        result = data_agent.process_file(file_path)
         
-        # File classifier agent begins classification
-        agent_activity('FileClassifierAgent', 'CLASSIFYING', 'Starting file classification')
-        
-        # Analyze the file with LLM for classification
-        agent_activity('FileClassifierAgent', 'CLASSIFYING', 'Analyzing file content and structure')
-        analysis_result = analyze_file_with_llm(file_path)
-        agent_activity('FileClassifierAgent', 'CLASSIFIED', 'File classification complete', analysis_result)
-        
-        # Process the file based on its type
-        db_path = os.path.join('temp', f"{timestamp}_database.db")
-        is_schema_file = False
-        data_dict_path = file_path
-        
-        # Start profiling
-        agent_activity('DataProfilerAgent', 'PROFILING', 'Starting data profiling')
-        
-        # Check if this is a schema file with multiple tables
-        if file_path.lower().endswith('.csv'):
-            df = pd.read_csv(file_path)
-            if all(col in df.columns for col in ['TABLE_NAME', 'COLUMN_NAME', 'DATA_TYPE']):
-                is_schema_file = True
-                # Generate data dictionary path for schema file
-                data_dict_path = os.path.splitext(file_path)[0] + "_dict.json"
-                agent_activity('DataProfilerAgent', 'PROFILED', 'Schema file identified and profiled', {
-                    'is_schema_file': True,
-                    'tables_count': len(df['TABLE_NAME'].unique())
-                })
-            else:
-                agent_activity('DataProfilerAgent', 'PROFILED', 'Data file profiled', {
-                    'is_schema_file': False,
-                    'rows_count': len(df),
-                    'columns_count': len(df.columns)
-                })
-        else:
-            agent_activity('DataProfilerAgent', 'PROFILED', 'Data file profiled')
-        
-        # Process the file based on whether it's a schema file or not
-        if is_schema_file:
-            # For schema files, we need to create the data dictionary
-            agent_activity('DictionarySynthesizerAgent', 'DICT_DRAFTING', 'Creating draft data dictionary')
-            df = pd.read_csv(file_path)
-            
-            # Process schema file with real agent activities
-            process_schema_file(file_path, db_path, df)
-            agent_activity('DictionarySynthesizerAgent', 'DICT_DRAFT', 'Data dictionary draft created')
-            
-            # Dictionary review (real agent activity)
-            agent_activity('DictionaryReviewerAgent', 'DICT_REVIEWING', 'Reviewing data dictionary')
-            
-            # Simulate the review process (in a real system, this would be a separate agent)
-            data_dict_exists = os.path.exists(os.path.splitext(file_path)[0] + "_dict.json")
-            review_details = {
-                'data_dictionary_exists': data_dict_exists,
-                'review_status': 'approved' if data_dict_exists else 'failed'
-            }
-            agent_activity('DictionaryReviewerAgent', 'DICT_REVIEWED', 
-                          'Data dictionary reviewed and approved' if data_dict_exists else 'Review failed - dictionary not found',
-                          review_details)
-            
-            # Update the data_dict_path to point to the generated JSON file
-            data_dict_path = os.path.splitext(file_path)[0] + "_dict.json"
-            
-            # Ready state
-            agent_activity('WorkflowOrchestratorAgent', 'READY', 'Preparing for sample data generation')
-            
-            # Sample data generation
-            agent_activity('SampleDataGeneratorAgent', 'BULK_LOADING', 'Generating realistic sample data')
-            
-            # Make sure the file exists
-            if not os.path.exists(data_dict_path):
-                # If the file doesn't exist, fall back to the original file path
-                data_dict_path = file_path
-                agent_activity('SampleDataGeneratorAgent', 'ERROR', 'Dictionary file not found, using original file')
-            else:
-                agent_activity('SampleDataGeneratorAgent', 'BULK_LOADED', 'Sample data generated successfully')
-        else:
-            # For regular data files
-            agent_activity('WorkflowOrchestratorAgent', 'READY', 'Preparing database setup')
-            agent_activity('DatabaseBuilderAgent', 'BULK_LOADING', 'Setting up database')
-            data_dict_path = process_file(file_path, db_path)
-            agent_activity('DatabaseBuilderAgent', 'BULK_LOADED', 'Database setup complete')
-        
-        # Final progress update
-        agent_activity('WorkflowOrchestratorAgent', 'DONE', 'Processing complete - Ready for queries')
-        
-        # Return the analysis result and paths
+        # Return the result
         response = {
             'success': True,
             'message': 'File uploaded and processed successfully',
-            'analysis': analysis_result,
-            'is_schema_file': is_schema_file,
-            'data_dict_path': data_dict_path,
-            'db_path': db_path,
+            'analysis': result.get('classification', {}),
+            'is_schema_file': result.get('classification', {}).get('is_schema_file', False),
+            'data_dict_path': result.get('dict_path'),
+            'db_path': result.get('db_path'),
             'file_id': current_file_id
         }
         
@@ -343,81 +257,13 @@ def process_query():
         return jsonify(response), 400
     
     try:
-        # Get table information from the database
-        conn = sqlite3.connect(db_path)
-        cursor = conn.cursor()
+        # Create and use the QueryProcessingAgent to process the query
+        from query_processing_agent import QueryProcessingAgent
+        query_agent = QueryProcessingAgent()
+        result = query_agent.process_query(query, db_path, data_dict_path)
         
-        # Get all table names
-        cursor.execute("SELECT name FROM sqlite_master WHERE type='table';")
-        tables = cursor.fetchall()
-        table_info = {}
-        
-        for table in tables:
-            table_name = table[0]
-            cursor.execute(f"PRAGMA table_info({table_name});")
-            columns = cursor.fetchall()
-            table_info[table_name] = [col[1] for col in columns]
-        
-        # Convert query to SQL using GPT-4.1 Nano
-        sql_result = convert_to_sql(query, table_info, data_dict_path)
-        
-        # Execute the SQL query
-        if sql_result.get('sql'):
-            try:
-                # Get the SQL query
-                sql_query = sql_result['sql']
-                
-                # Clean the SQL query to remove comments and handle CTEs properly
-                sql_query = clean_sql_query(sql_query)
-                
-                # Fix table names in the query if needed
-                for table_name in table_info.keys():
-                    # Clean up table name to ensure it's valid SQL
-                    clean_table_name = table_name.split('.')[0]  # Remove file extension if present
-                    # Remove timestamp prefix if present (like 1748327704_)
-                    if '_' in clean_table_name and clean_table_name.split('_')[0].isdigit():
-                        clean_table_name = '_'.join(clean_table_name.split('_')[1:])
-                    
-                    # Replace the original table name with the cleaned one in the query
-                    sql_query = sql_query.replace(f'"{table_name}"', f'"{clean_table_name}"')
-                    sql_query = sql_query.replace(f'`{table_name}`', f'`{clean_table_name}`')
-                    sql_query = sql_query.replace(f'[{table_name}]', f'[{clean_table_name}]')
-                    sql_query = sql_query.replace(f' {table_name} ', f' {clean_table_name} ')
-                
-                # Execute the query
-                df = pd.read_sql_query(sql_query, conn)
-                records = df.to_dict('records')
-                columns = df.columns.tolist()
-                
-                # Generate a summary of the results using the summarizer agent
-                summary = generate_result_summary(query, sql_result['sql'], records, columns)
-                
-                response = {
-                    'success': True,
-                    'query': query,
-                    'sql': sql_result['sql'],
-                    'reasoning': sql_result.get('reasoning', ''),
-                    'columns': columns,
-                    'data': records,
-                    'summary': summary
-                }
-            except Exception as e:
-                response = {
-                    'success': False,
-                    'query': query,
-                    'sql': sql_result['sql'],
-                    'reasoning': sql_result.get('reasoning', ''),
-                    'error': f"Error executing SQL: {str(e)}"
-                }
-        else:
-            response = {
-                'success': False,
-                'query': query,
-                'error': sql_result.get('error', 'Failed to convert query to SQL')
-            }
-        
-        conn.close()
-        return jsonify(response)
+        # Return the result
+        return jsonify(result)
     
     except Exception as e:
         response = {

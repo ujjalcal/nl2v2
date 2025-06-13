@@ -867,6 +867,62 @@ class SQLExecutorAgent(BaseAgent):
             }
 
 
+class QueryClassifierAgent(BaseAgent):
+    """Classifies natural language queries to determine processing approach."""
+    
+    def __init__(self):
+        super().__init__("QueryClassifierAgent")
+    
+    def process(self, query, data_dict=None):
+        """Classify the query to determine if it needs SQL or direct answer."""
+        agent_activity(self.name, 'PROCESSING', 'Classifying query')
+        
+        system_prompt = """
+        You are a query classification agent for a natural language to SQL system.
+        Your job is to analyze a query and determine:
+        1. Whether it requires SQL execution or can be answered directly
+        2. The complexity level of the query
+        3. The confidence in your classification
+        
+        Respond with a YAML structure containing:
+        - query_type: Either 'sql' or 'direct'
+        - complexity: 'simple', 'moderate', or 'complex'
+        - confidence: A float between 0 and 1
+        - reasoning: Brief explanation of your classification
+        """
+        
+        # Create user message with query and data dictionary info
+        user_message = f"Query: {query}\n\n"
+        
+        if data_dict:
+            # Add data dictionary information if available
+            tables_info = ""
+            if 'tables' in data_dict:
+                tables_info = "Available tables and columns:\n"
+                for table in data_dict['tables']:
+                    table_name = table.get('name', 'Unknown')
+                    columns = table.get('columns', [])
+                    column_names = [col.get('name', 'Unknown') for col in columns]
+                    tables_info += f"- {table_name}: {', '.join(column_names)}\n"
+            
+            user_message += tables_info
+        
+        # Call LLM
+        content = self._call_llm(system_prompt, user_message)
+        classification = self._parse_yaml_response(content, {
+            'query_type': 'sql',  # Default to SQL if unsure
+            'complexity': 'simple',
+            'confidence': 0.5,
+            'reasoning': 'Default classification'
+        })
+        
+        agent_activity(self.name, 'COMPLETED', f"Query classified as {classification.get('query_type')}",
+                      {'complexity': classification.get('complexity'), 
+                       'confidence': classification.get('confidence')})
+        
+        return classification
+
+
 class ResultCombinerAgent(BaseAgent):
     """Joins results from multiple execution paths."""
     
