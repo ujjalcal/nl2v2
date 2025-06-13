@@ -103,8 +103,8 @@ def list_databases():
             # Try to find the corresponding data dictionary
             timestamp = file.split('_')[0]
             potential_dict_paths = [
-                os.path.join('temp', f"{timestamp}_dict.json"),
-                os.path.join('temp', f"{timestamp}_data_dict.json")
+                os.path.join('temp', f"{timestamp}_dict.json")#,
+                #os.path.join('temp', f"{timestamp}_data_dict.json")
             ]
             
             data_dict_path = None
@@ -114,12 +114,12 @@ def list_databases():
                     break
             
             # If no data dictionary found, try to find any JSON file with similar name
-            if not data_dict_path:
-                base_name = os.path.splitext(file)[0]
-                for temp_file in os.listdir('temp'):
-                    if temp_file.startswith(base_name) and temp_file.endswith('.json'):
-                        data_dict_path = os.path.join('temp', temp_file)
-                        break
+            # if not data_dict_path:
+            #     base_name = os.path.splitext(file)[0]
+            #     for temp_file in os.listdir('temp'):
+            #         if temp_file.startswith(base_name) and temp_file.endswith('.json'):
+            #             data_dict_path = os.path.join('temp', temp_file)
+            #             break
             
             # Get file creation time to use as a display name if needed
             try:
