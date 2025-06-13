@@ -1334,6 +1334,7 @@ def index():
             // Function to update the database selector
             function updateDatabaseSelector() {
                 console.log('Updating database selector with available databases:', availableDatabases);
+                let foundSelected = false;
                 databaseSelect.innerHTML = '';
                 
                 if (availableDatabases.length === 0) {

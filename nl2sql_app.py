@@ -139,11 +139,19 @@ if __name__ == "__main__":
             time.sleep(1)
     except KeyboardInterrupt:
         print("\nShutting down NL2SQL Tool...")
+    except Exception as e:
+        print(f"Error in main loop: {e}")
     finally:
         # Clean up processes
-        if api_process and api_process.poll() is None:
-            api_process.terminate()
-        if ui_process and ui_process.poll() is None:
-            ui_process.terminate()
+        try:
+            if api_process and api_process.poll() is None:
+                api_process.terminate()
+                api_process.wait(timeout=5)
+            if ui_process and ui_process.poll() is None:
+                ui_process.terminate()
+                ui_process.wait(timeout=5)
+        except Exception as e:
+            print(f"Error during cleanup: {e}")
         print("Servers shut down.")
-        sys.exit(0)
+        # Force exit to prevent hanging
+        os._exit(0)
