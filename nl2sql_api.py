@@ -124,28 +124,21 @@ def list_databases():
             # Get file creation time to use as a display name if needed
             try:
                 file_time = os.path.getctime(db_path)
+                timestamp = int(file_time)  # Store as integer timestamp
                 time_str = time.strftime('%Y-%m-%d %H:%M:%S', time.localtime(file_time))
             except:
+                timestamp = 0
                 time_str = 'Unknown'
                 
-            # Try to get a better name from the data dictionary if available
-            display_name = f"Database {time_str}"
-            if data_dict_path and os.path.exists(data_dict_path):
-                try:
-                    with open(data_dict_path, 'r') as f:
-                        data_dict = json.load(f)
-                        if 'database_name' in data_dict:
-                            display_name = data_dict['database_name']
-                        elif 'name' in data_dict:
-                            display_name = data_dict['name']
-                except:
-                    pass
+            # Use just the filename without path or extension as the display name
+            display_name = os.path.splitext(os.path.basename(db_path))[0]
             
             databases.append({
                 'name': display_name,
                 'path': db_path,
                 'data_dict_path': data_dict_path,
-                'timestamp': time_str
+                'timestamp': timestamp,  # Store numeric timestamp
+                'created_at': time_str   # Keep human-readable format
             })
     
     # Sort databases by timestamp (newest first)
